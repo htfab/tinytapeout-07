@@ -1,0 +1,49 @@
+From 9c49f95a85763e18add738ed44ec67ebe44a4900 Mon Sep 17 00:00:00 2001
+From: htfab <mpw@htamas.net>
+Date: Fri, 24 May 2024 18:53:11 +0200
+Subject: [PATCH] Support for Tiny Tapeout overrides
+
+---
+ flake.nix          | 8 +++++---
+ nix/tt-overlay.nix | 1 +
+ 2 files changed, 6 insertions(+), 3 deletions(-)
+ create mode 100644 nix/tt-overlay.nix
+
+diff --git a/flake.nix b/flake.nix
+index 056175d..8efcca5 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -66,7 +66,7 @@
+       callPackage = pkgs.lib.callPackageWith (pkgs // self.packages.${pkgs.system});
+       callPythonPackage = pkgs.lib.callPackageWith (pkgs // pkgs.python3.pkgs // ioplace-parser.packages."${pkgs.system}" // libparse.packages."${pkgs.system}" // volare.packages."${pkgs.system}" // self.packages.${pkgs.system});
+     in
+-      rec {
++      (pkgs.lib.makeExtensible(self: {
+         colab-env = callPackage ./nix/colab-env.nix {};
+         netgen = callPackage ./nix/netgen.nix {};
+         magic = callPackage ./nix/magic.nix {};
+@@ -88,10 +88,12 @@
+         yosys-f4pga-sdc = callPackage ./nix/yosys-f4pga-sdc.nix {};
+         yosys-lighter = callPackage ./nix/yosys-lighter.nix {};
+         yosys-synlig-sv = callPackage ./nix/yosys-synlig-sv.nix {};
+-        default = openlane;
++        default = self.openlane;
+       }
+       // (pkgs.lib.optionalAttrs (pkgs.system == "x86_64-linux") {yosys-ghdl = callPackage ./nix/yosys-ghdl.nix {};})
+-      // (pkgs.lib.optionalAttrs (pkgs.stdenv.isLinux) {openlane-docker = callPackage ./nix/docker.nix {};}));
++      // (pkgs.lib.optionalAttrs (pkgs.stdenv.isLinux) {openlane-docker = callPackage ./nix/docker.nix {};})
++      )).extend(import ./nix/tt-overlay.nix)
++    );
+ 
+     devShells = self.forAllSystems (
+       pkgs: let
+diff --git a/nix/tt-overlay.nix b/nix/tt-overlay.nix
+new file mode 100644
+index 0000000..2326f2e
+--- /dev/null
++++ b/nix/tt-overlay.nix
+@@ -0,0 +1 @@
++new: old: {}
+-- 
+2.45.1
+

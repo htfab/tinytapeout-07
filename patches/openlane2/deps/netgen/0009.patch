@@ -1,0 +1,27 @@
+From f2f082e62756a1ae92076b3d025435d46ea6fa36 Mon Sep 17 00:00:00 2001
+From: Sylvain Munaut <tnt@246tNt.com>
+Date: Mon, 20 May 2024 12:59:42 +0200
+Subject: [PATCH 9/9] verilog: Create non-existent nodes if on LHS of `assign`
+
+Fixes #89
+
+Signed-off-by: Sylvain Munaut <tnt@246tNt.com>
+---
+ base/verilog.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/base/verilog.c b/base/verilog.c
+index bbc12fc..102e99b 100644
+--- a/base/verilog.c
++++ b/base/verilog.c
+@@ -1797,6 +1797,10 @@ void ReadVerilogFile(char *fname, int filenum, struct cellstack **CellStackPtr,
+ 	    }
+ 	    else {
+ 		lhs = LookupObject(nexttok, CurrentCell);
++		if (lhs == NULL) {
++		    Node(nexttok);
++		    lhs = LookupObject(nexttok, CurrentCell);
++		}
+ 		strcpy(noderoot, nexttok);
+ 	    }
+ 	    SkipTokComments(VLOG_DELIMITERS);

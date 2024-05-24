@@ -16,7 +16,7 @@ Then install OpenLane 2 with Nix, as explained [here](https://openlane2.readthed
 
 2. Clone OpenLane 2 to ~/openlane2 (or change the value of the `OPENLANE2_ROOT` environment variable).
 
-3. Apply patches to OpenLane 2: `git -C $OPENLANE2_ROOT apply $PWD/patches/openlane2.patch`
+3. Apply patches to OpenLane 2: `./patches/apply_patches.sh`
 
 ## Repository setup
 

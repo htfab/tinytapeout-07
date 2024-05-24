@@ -1,0 +1,28 @@
+From fd0c8c87eaf5f300bc3a52d84e0544272656d80b Mon Sep 17 00:00:00 2001
+From: Tim Edwards <tim@opencircuitdesign.com>
+Date: Wed, 3 Apr 2024 21:05:08 -0400
+Subject: [PATCH 5/9] Corrected another error in which, for device sorting, "M"
+ was set to 1 before the loop over devices in "run", resulting in "M" taking
+ the value of the previous property record if the following record did not
+ have an "M" value, instead of setting it to 1.
+
+---
+ base/netcmp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/base/netcmp.c b/base/netcmp.c
+index e01a065..8c031d5 100644
+--- a/base/netcmp.c
++++ b/base/netcmp.c
+@@ -4467,9 +4467,9 @@ void parallel_sort(struct objlist *ob1, struct nlist *tp1, int idx1, int run)
+    proplist = (propsort *)MALLOC(run * sizeof(propsort));
+ 
+    obp = obn;
+-   mval = 1;
+    pval = aval = oval = 0.0;
+    for (i = 0; i < run; i++) {
++      mval = 1;
+       has_crit = FALSE;
+       merge_type = MERGE_NONE;
+       ca = co = (char)0;
+

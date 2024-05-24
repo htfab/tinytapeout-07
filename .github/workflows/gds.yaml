@@ -38,9 +38,10 @@ jobs:
           ref: ${{ env.OPENLANE_TAG }}
 
       - name: Patch OpenLane 2 repo
-        working-directory: openlane2
+        env:
+          OPENLANE2_ROOT: ${{ github.workspace }}/openlane2
         run:
-          git apply --allow-empty ../patches/openlane2.patch
+          ./patches/apply_patches.sh
 
       - name: setup python
         uses: actions/setup-python@v5

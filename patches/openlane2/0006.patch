@@ -1,0 +1,27 @@
+From 0fde853171d9cefe0bfc52f792aafa786df9c60d Mon Sep 17 00:00:00 2001
+From: Mohamed Gaber <donn@efabless.com>
+Date: Thu, 16 May 2024 15:11:03 +0300
+Subject: [PATCH 6/8] fix disconnected pins stemming from CTS
+
+* `Odb.ReportDisconnectedPins`
+  * Disconnected instances created during CTS, prefixed `clkload`, are now ignored.
+---
+ openlane/scripts/odbpy/disconnected_pins.py | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/openlane/scripts/odbpy/disconnected_pins.py b/openlane/scripts/odbpy/disconnected_pins.py
+index 8c55f68..5309865 100644
+--- a/openlane/scripts/odbpy/disconnected_pins.py
++++ b/openlane/scripts/odbpy/disconnected_pins.py
+@@ -276,6 +276,8 @@ def main(
+     for instance in instances:
+         if instance.getMaster().getName() in ignore_modules:
+             continue
++        if instance.getName().startswith("clkload"):  # TritonCTS dummy clock loads
++            continue
+         instance_module = Module(instance)
+         disconnected_pin_count += instance_module.disconnected_pin_count
+         critical_disconnected_pin_count += (
+-- 
+2.45.1
+

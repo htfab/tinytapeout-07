@@ -1,0 +1,36 @@
+From 68e0f166580e660085c5ce327cc41378f8347864 Mon Sep 17 00:00:00 2001
+From: Sylvain Munaut <tnt@246tNt.com>
+Date: Mon, 20 May 2024 11:57:13 +0000
+Subject: [PATCH] VerilogWriter: Always write power pin assignement with port
+ in RHS.
+
+The LHS can be implicitely declared, not the RHS.
+
+Signed-off-by: Sylvain Munaut <tnt@246tNt.com>
+---
+ verilog/VerilogWriter.cc | 12 +++++++++---
+ 1 file changed, 9 insertions(+), 3 deletions(-)
+
+diff --git a/verilog/VerilogWriter.cc b/verilog/VerilogWriter.cc
+index 799495e5..5cd1329d 100644
+--- a/verilog/VerilogWriter.cc
++++ b/verilog/VerilogWriter.cc
+@@ -420,9 +420,15 @@ VerilogWriter::writeAssigns(Instance *inst)
+                                          network_->pathEscape());
+       string net_vname = netVerilogName(network_->name(net),
+                                         network_->pathEscape());
+-      fprintf(stream_, " assign %s = %s;\n",
+-              port_vname.c_str(),
+-              net_vname.c_str());
++      if (network_->direction(port)->isPowerGround()) {
++        fprintf(stream_, " assign %s = %s;\n",
++                net_vname.c_str(),
++                port_vname.c_str());
++      } else {
++        fprintf(stream_, " assign %s = %s;\n",
++                port_vname.c_str(),
++                net_vname.c_str());
++      }
+     }
+   }
+   delete pin_iter;
