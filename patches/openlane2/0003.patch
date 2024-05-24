@@ -1,0 +1,882 @@
+From 7875fc6929395893f493d46106f0d539983d40b1 Mon Sep 17 00:00:00 2001
+From: Mohamed Gaber <donn@efabless.com>
+Date: Tue, 7 May 2024 14:51:46 +0300
+Subject: [PATCH 3/8] Overridable Tools (#466)
+
+## Tool Updates
+
+* All tool nix derivations now have `rev`/`version` and `sha256` as one
+of their parameters, allowing them to be easily replaced with
+`.override`.
+* Volare updated to `0.16.2`, now used as a flake.
+---
+ .github/workflows/ci.yml |   1 +
+ flake.lock               |  23 ++++-
+ flake.nix                |   6 +-
+ nix/docker.nix           |  17 ++--
+ nix/klayout.nix          |   6 +-
+ nix/magic.nix            |   6 +-
+ nix/netgen.nix           |   6 +-
+ nix/openroad-abc.nix     |   6 +-
+ nix/openroad.nix         | 182 ++++++++++++++++++++-------------------
+ nix/opensta.nix          |   6 +-
+ nix/sphinx-subfigure.nix |  11 ++-
+ nix/sphinx-tippy.nix     |   9 +-
+ nix/surelog.nix          |   6 +-
+ nix/tclFull.nix          |  17 ++--
+ nix/verilator.nix        |   6 +-
+ nix/volare.nix           |  27 ------
+ nix/yosys-abc.nix        |   6 +-
+ nix/yosys-eqy.nix        |   6 +-
+ nix/yosys-f4pga-sdc.nix  |   8 +-
+ nix/yosys-ghdl.nix       |   6 +-
+ nix/yosys-lighter.nix    |   6 +-
+ nix/yosys-sby.nix        |   6 +-
+ nix/yosys-synlig-sv.nix  |   8 +-
+ nix/yosys.nix            |   6 +-
+ 24 files changed, 211 insertions(+), 176 deletions(-)
+ delete mode 100644 nix/volare.nix
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 83be196..a5b8751 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -192,6 +192,7 @@ jobs:
+         uses: ./.github/actions/build_nix
+         with:
+           nix_system: x86_64-darwin
++          local_cache_key: derivation-${{ github.run_id }}
+           cachix_cache: ${{ vars.CACHIX_CACHE || 'openlane' }}
+           cachix_token: "${{ secrets.CACHIX_TOKEN }}"
+           shell: "zsh {0}"
+diff --git a/flake.lock b/flake.lock
+index 9aea9e3..7d5a77b 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -73,7 +73,28 @@
+         "flake-compat": "flake-compat",
+         "ioplace-parser": "ioplace-parser",
+         "libparse": "libparse",
+-        "nixpkgs": "nixpkgs"
++        "nixpkgs": "nixpkgs",
++        "volare": "volare"
++      }
++    },
++    "volare": {
++      "inputs": {
++        "nixpkgs": [
++          "nixpkgs"
++        ]
++      },
++      "locked": {
++        "lastModified": 1715078431,
++        "narHash": "sha256-w4NLYQwvE/UFgPZDOnKDpagTjKb8FwKWOp3wV/RvPFM=",
++        "owner": "efabless",
++        "repo": "volare",
++        "rev": "13ccef8de5d8b27311ffd458ac629953784b5224",
++        "type": "github"
++      },
++      "original": {
++        "owner": "efabless",
++        "repo": "volare",
++        "type": "github"
+       }
+     }
+   },
+diff --git a/flake.nix b/flake.nix
+index 73bde17..056175d 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -25,17 +25,20 @@
+     nixpkgs.url = github:nixos/nixpkgs/nixos-23.11;
+     libparse.url = github:efabless/libparse-python;
+     ioplace-parser.url = github:efabless/ioplace_parser;
++    volare.url = github:efabless/volare;
+     flake-compat.url = "https://flakehub.com/f/edolstra/flake-compat/1.tar.gz";
+   };
+   
+   inputs.libparse.inputs.nixpkgs.follows = "nixpkgs";
+   inputs.ioplace-parser.inputs.nixpkgs.follows = "nixpkgs";
++  inputs.volare.inputs.nixpkgs.follows = "nixpkgs";
+ 
+   outputs = {
+     self,
+     nixpkgs,
+     libparse,
+     ioplace-parser,
++    volare,
+     ...
+   }: {
+     # Helper functions
+@@ -61,7 +64,7 @@
+     # Outputs
+     packages = self.forAllSystems (pkgs: let
+       callPackage = pkgs.lib.callPackageWith (pkgs // self.packages.${pkgs.system});
+-      callPythonPackage = pkgs.lib.callPackageWith (pkgs // pkgs.python3.pkgs // ioplace-parser.packages."${pkgs.system}" // libparse.packages."${pkgs.system}" // self.packages.${pkgs.system});
++      callPythonPackage = pkgs.lib.callPackageWith (pkgs // pkgs.python3.pkgs // ioplace-parser.packages."${pkgs.system}" // libparse.packages."${pkgs.system}" // volare.packages."${pkgs.system}" // self.packages.${pkgs.system});
+     in
+       rec {
+         colab-env = callPackage ./nix/colab-env.nix {};
+@@ -78,7 +81,6 @@
+         sphinx-subfigure = callPythonPackage ./nix/sphinx-subfigure.nix {};
+         tclFull = callPackage ./nix/tclFull.nix {};
+         verilator = callPackage ./nix/verilator.nix {};
+-        volare = callPackage ./nix/volare.nix {};
+         yosys-abc = callPackage ./nix/yosys-abc.nix {};
+         yosys = callPackage ./nix/yosys.nix {};
+         yosys-sby = callPackage ./nix/yosys-sby.nix {};
+diff --git a/nix/docker.nix b/nix/docker.nix
+index 0e50ac7..be05cea 100644
+--- a/nix/docker.nix
++++ b/nix/docker.nix
+@@ -23,8 +23,7 @@
+   zsh,
+   silver-searcher,
+   coreutils,
+-}:
+-let
++}: let
+   # # We're fetchurl-ing this one so we don't want to use a fixed-output derivation
+   # # like fetchFromGitHub
+   # # See https://nixos.org/manual/nix/stable/language/import-from-derivation
+@@ -53,7 +52,7 @@ in (import ./create-docker.nix {
+   };
+   maxLayers = 2;
+   channelURL = "https://nixos.org/channels/nixos-23.11";
+-  
++
+   image-created = "now";
+   image-extraCommands = ''
+     mkdir -p ./etc
+@@ -67,12 +66,12 @@ in (import ./create-docker.nix {
+   '';
+   image-config-cmd = ["${zsh}/bin/zsh"];
+   image-config-extra-env = [
+-      "LANG=C.UTF-8"
+-      "LC_ALL=C.UTF-8"
+-      "LC_CTYPE=C.UTF-8"
+-      "EDITOR=nvim"
+-      "PYTHONPATH=${openlane-env-sitepackages}"
+-      "TMPDIR=/tmp"
++    "LANG=C.UTF-8"
++    "LC_ALL=C.UTF-8"
++    "LC_CTYPE=C.UTF-8"
++    "EDITOR=nvim"
++    "PYTHONPATH=${openlane-env-sitepackages}"
++    "TMPDIR=/tmp"
+   ];
+   image-config-extra-path = [
+     "${openlane-env-bin}"
+diff --git a/nix/klayout.nix b/nix/klayout.nix
+index 9c99b22..b782437 100644
+--- a/nix/klayout.nix
++++ b/nix/klayout.nix
+@@ -41,14 +41,16 @@
+   curl,
+   gcc,
+   libgit2,
++  version ? "0.28.17-1",
++  sha256 ? "sha256:0c2jm0n3vm4wyk25wpi1dlv00qnjqdmgpjmchv0hc5ysx47a2y6a",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "klayout";
+-  version = "0.28.17-1";
++  inherit version;
+ 
+   src = fetchTarball {
+     url = "https://github.com/KLayout/klayout/archive/refs/tags/v${version}.tar.gz";
+-    sha256 = "sha256:0c2jm0n3vm4wyk25wpi1dlv00qnjqdmgpjmchv0hc5ysx47a2y6a";
++    inherit sha256;
+   };
+ 
+   patches = [
+diff --git a/nix/magic.nix b/nix/magic.nix
+index c1557b8..2d62fd0 100644
+--- a/nix/magic.nix
++++ b/nix/magic.nix
+@@ -41,16 +41,18 @@
+   cairo,
+   python3,
+   gnused,
++  rev ? "bfd938b5e2321cf9a6c15f398fbc987b56fcc179",
++  sha256 ? "sha256-xNhPnNGoJ8YiG6NFeFhOuKTB56rQvggJugIvukao6U8=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "magic-vlsi";
+-  rev = "bfd938b5e2321cf9a6c15f398fbc987b56fcc179";
++  inherit rev;
+ 
+   src = fetchFromGitHub {
+     owner = "RTimothyEdwards";
+     repo = "magic";
+     inherit rev;
+-    sha256 = "sha256-xNhPnNGoJ8YiG6NFeFhOuKTB56rQvggJugIvukao6U8=";
++    inherit sha256;
+   };
+ 
+   nativeBuildInputs = [python3 gnused];
+diff --git a/nix/netgen.nix b/nix/netgen.nix
+index b7cb1eb..bc311c4 100644
+--- a/nix/netgen.nix
++++ b/nix/netgen.nix
+@@ -19,14 +19,16 @@
+   tk,
+   m4,
+   python3,
++  rev ? "87d8759a6980d297edcb9be6f8661867e4726f9a",
++  sha256 ? "sha256-wTreP/hVlXuo+SOC+jdROeC53o3tOF2M9eQIgX15zRo=",
+ }:
+ clangStdenv.mkDerivation {
+   name = "netgen";
+   src = fetchFromGitHub {
+     owner = "RTimothyEdwards";
+     repo = "netgen";
+-    rev = "87d8759a6980d297edcb9be6f8661867e4726f9a";
+-    sha256 = "sha256-wTreP/hVlXuo+SOC+jdROeC53o3tOF2M9eQIgX15zRo=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   configureFlags = [
+diff --git a/nix/openroad-abc.nix b/nix/openroad-abc.nix
+index 4e2e2ca..e7bf053 100644
+--- a/nix/openroad-abc.nix
++++ b/nix/openroad-abc.nix
+@@ -16,6 +16,8 @@
+   abc-verifier,
+   fetchFromGitHub,
+   zlib,
++  rev ? "d3916ac0337d599b30aeaf94e82b13338530ced3",
++  sha256 ? "sha256-osJzeOb0bgvbPGJjcpcfQzwcRJTZh1DYJ7RpFgw1NKg=",
+ }:
+ abc-verifier.overrideAttrs (finalAttrs: previousAttrs: {
+   name = "openroad-abc";
+@@ -23,8 +25,8 @@ abc-verifier.overrideAttrs (finalAttrs: previousAttrs: {
+   src = fetchFromGitHub {
+     owner = "The-OpenROAD-Project";
+     repo = "abc";
+-    rev = "d3916ac0337d599b30aeaf94e82b13338530ced3";
+-    sha256 = "sha256-osJzeOb0bgvbPGJjcpcfQzwcRJTZh1DYJ7RpFgw1NKg=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   patches = [
+diff --git a/nix/openroad.nix b/nix/openroad.nix
+index b8fdac7..3568772 100644
+--- a/nix/openroad.nix
++++ b/nix/openroad.nix
+@@ -42,107 +42,109 @@
+   bison,
+   clang-tools_14,
+   ioplace-parser,
+-}:
+-let
+-  pyenv = (python3.withPackages(p: with p; [
+-    click
+-    rich
+-    pyyaml
+-    ioplace-parser
+-  ]));
++  rev ? "d423155d69de7f683a23f6916ead418a615ad4ad",
++  sha256 ? "sha256-RrJYdvzxD64TeNAlPs6G4BKxflpQO6ED78SqQVH7EUE=",
++}: let
++  pyenv = python3.withPackages (p:
++    with p; [
++      click
++      rich
++      pyyaml
++      ioplace-parser
++    ]);
+   pyenv-sitepackages = "${pyenv}/${pyenv.sitePackages}";
+ in
+-clangStdenv.mkDerivation rec {
+-  name = "openroad";
+-  rev = "d423155d69de7f683a23f6916ead418a615ad4ad";
+-
+-  src = fetchFromGitHub {
+-    owner = "The-OpenROAD-Project";
+-    repo = "OpenROAD";
++  clangStdenv.mkDerivation rec {
++    name = "openroad";
+     inherit rev;
+-    sha256 = "sha256-RrJYdvzxD64TeNAlPs6G4BKxflpQO6ED78SqQVH7EUE=";
+-  };
+ 
+-  cmakeFlagsAll = [
+-    "-DTCL_LIBRARY=${tcl}/lib/libtcl${clangStdenv.hostPlatform.extensions.sharedLibrary}"
+-    "-DTCL_HEADER=${tcl}/include/tcl.h"
+-    "-DUSE_SYSTEM_BOOST:BOOL=ON"
+-    "-DCMAKE_CXX_FLAGS=-I${openroad-abc}/include"
+-    "-DENABLE_TESTS:BOOL=OFF"
+-    "-DVERBOSE=1"
+-  ];
++    src = fetchFromGitHub {
++      owner = "The-OpenROAD-Project";
++      repo = "OpenROAD";
++      inherit rev;
++      inherit sha256;
++    };
+ 
+-  cmakeFlags =
+-    cmakeFlagsAll
+-    ++ [
+-      "-DUSE_SYSTEM_ABC:BOOL=ON"
+-      "-DUSE_SYSTEM_OPENSTA:BOOL=ON"
+-      "-DOPENSTA_HOME=${opensta}"
+-      "-DABC_LIBRARY=${openroad-abc}/lib/libabc.a"
++    cmakeFlagsAll = [
++      "-DTCL_LIBRARY=${tcl}/lib/libtcl${clangStdenv.hostPlatform.extensions.sharedLibrary}"
++      "-DTCL_HEADER=${tcl}/include/tcl.h"
++      "-DUSE_SYSTEM_BOOST:BOOL=ON"
++      "-DCMAKE_CXX_FLAGS=-I${openroad-abc}/include"
++      "-DENABLE_TESTS:BOOL=OFF"
++      "-DVERBOSE=1"
+     ];
+ 
+-  preConfigure = ''
+-    sed -i "s/GITDIR-NOTFOUND/${rev}/" ./cmake/GetGitRevisionDescription.cmake
+-    patchShebangs ./etc/find_messages.py
++    cmakeFlags =
++      cmakeFlagsAll
++      ++ [
++        "-DUSE_SYSTEM_ABC:BOOL=ON"
++        "-DUSE_SYSTEM_OPENSTA:BOOL=ON"
++        "-DOPENSTA_HOME=${opensta}"
++        "-DABC_LIBRARY=${openroad-abc}/lib/libabc.a"
++      ];
+ 
+-    sed -i 's@#include "base/abc/abc.h"@#include <base/abc/abc.h>@' src/rmp/src/Restructure.cpp
+-    sed -i 's@#include "base/main/abcapis.h"@#include <base/main/abcapis.h>@' src/rmp/src/Restructure.cpp
+-    sed -i 's@# tclReadline@target_link_libraries(openroad readline)@' src/CMakeLists.txt
+-    sed -i 's@%include "../../src/Exception.i"@%include "../../Exception.i"@' src/dbSta/src/dbSta.i
+-  '';
++    preConfigure = ''
++      sed -i "s/GITDIR-NOTFOUND/${rev}/" ./cmake/GetGitRevisionDescription.cmake
++      patchShebangs ./etc/find_messages.py
+ 
+-  buildInputs = [
+-    openroad-abc
+-    boost183
+-    eigen
+-    tcl
+-    pyenv
+-    readline
+-    tclreadline
+-    spdlog-internal-fmt
+-    libffi
+-    libsForQt5.qtbase
+-    llvmPackages.openmp
++      sed -i 's@#include "base/abc/abc.h"@#include <base/abc/abc.h>@' src/rmp/src/Restructure.cpp
++      sed -i 's@#include "base/main/abcapis.h"@#include <base/main/abcapis.h>@' src/rmp/src/Restructure.cpp
++      sed -i 's@# tclReadline@target_link_libraries(openroad readline)@' src/CMakeLists.txt
++      sed -i 's@%include "../../src/Exception.i"@%include "../../Exception.i"@' src/dbSta/src/dbSta.i
++    '';
+ 
+-    lemon-graph
+-    or-tools
+-    opensta
+-    glpk
+-    zlib
+-    clp
+-    cbc
+-    re2
+-  ];
++    buildInputs = [
++      openroad-abc
++      boost183
++      eigen
++      tcl
++      pyenv
++      readline
++      tclreadline
++      spdlog-internal-fmt
++      libffi
++      libsForQt5.qtbase
++      llvmPackages.openmp
+ 
+-  patches = [
+-    ./patches/openroad/antenna.patch
+-  ];
++      lemon-graph
++      or-tools
++      opensta
++      glpk
++      zlib
++      clp
++      cbc
++      re2
++    ];
+ 
+-  nativeBuildInputs = [
+-    swig4
+-    pkg-config
+-    cmake
+-    gnumake
+-    flex
+-    bison
+-    libsForQt5.wrapQtAppsHook
+-    clang-tools_14
+-  ];
++    patches = [
++      ./patches/openroad/antenna.patch
++    ];
+ 
+-  shellHook = ''
+-    export DEVSHELL_CMAKE_FLAGS="${builtins.concatStringsSep " " cmakeFlagsAll}"
+-  '';
+-  
+-  qtWrapperArgs = [
+-    "--prefix PYTHONPATH : ${pyenv-sitepackages}"
+-  ];
++    nativeBuildInputs = [
++      swig4
++      pkg-config
++      cmake
++      gnumake
++      flex
++      bison
++      libsForQt5.wrapQtAppsHook
++      clang-tools_14
++    ];
++
++    shellHook = ''
++      export DEVSHELL_CMAKE_FLAGS="${builtins.concatStringsSep " " cmakeFlagsAll}"
++    '';
++
++    qtWrapperArgs = [
++      "--prefix PYTHONPATH : ${pyenv-sitepackages}"
++    ];
+ 
+-  meta = with lib; {
+-    description = "OpenROAD's unified application implementing an RTL-to-GDS flow";
+-    homepage = "https://theopenroadproject.org";
+-    # OpenROAD code is BSD-licensed, but OpenSTA is GPLv3 licensed,
+-    # so the combined work is GPLv3
+-    license = licenses.gpl3Plus;
+-    platforms = platforms.linux ++ platforms.darwin;
+-  };
+-}
++    meta = with lib; {
++      description = "OpenROAD's unified application implementing an RTL-to-GDS flow";
++      homepage = "https://theopenroadproject.org";
++      # OpenROAD code is BSD-licensed, but OpenSTA is GPLv3 licensed,
++      # so the combined work is GPLv3
++      license = licenses.gpl3Plus;
++      platforms = platforms.linux ++ platforms.darwin;
++    };
++  }
+diff --git a/nix/opensta.nix b/nix/opensta.nix
+index bdf07f3..c01a50a 100644
+--- a/nix/opensta.nix
++++ b/nix/opensta.nix
+@@ -23,16 +23,18 @@
+   bison,
+   tcl,
+   zlib,
++  rev ? "a7f34210b403fe399c170296d54258f10f92885f",
++  sha256 ? "sha256-2R+ox0kcjXX5Kc6dtH/OEOccU/m8FjW1qnb0kxM/ahE=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "opensta";
+-  rev = "a7f34210b403fe399c170296d54258f10f92885f";
++  inherit rev;
+ 
+   src = fetchFromGitHub {
+     owner = "The-OpenROAD-Project";
+     repo = "OpenSTA";
+     inherit rev;
+-    sha256 = "sha256-2R+ox0kcjXX5Kc6dtH/OEOccU/m8FjW1qnb0kxM/ahE=";
++    inherit sha256;
+   };
+ 
+   cmakeFlags = [
+diff --git a/nix/sphinx-subfigure.nix b/nix/sphinx-subfigure.nix
+index 3bbb8b9..f2e11f5 100644
+--- a/nix/sphinx-subfigure.nix
++++ b/nix/sphinx-subfigure.nix
+@@ -13,24 +13,27 @@
+ # limitations under the License.
+ {
+   lib,
++  fetchurl,
+   buildPythonPackage,
+   sphinx,
+   flit,
++  version ? "0.2.4",
++  sha256 ? "sha256-LFW8PwoVwftQ8JINvv5ndfsmOhYrX3TgbCGfp/ywINM=",
+ }:
+ buildPythonPackage rec {
+   name = "sphinx-subfigure";
+-  version = "0.2.4";
++  inherit version;
+   format = "pyproject";
+ 
+-  src = builtins.fetchurl {
++  src = fetchurl {
+     url = "https://github.com/sphinx-extensions2/sphinx-subfigure/archive/refs/tags/v${version}.tar.gz";
+-    sha256 = "sha256:1lr0n3yag7r1dkh78prb2qx2dyvmczzbw3cjy18gph8m18zvqm9c";
++    inherit sha256;
+   };
+ 
+   propagatedBuildInputs = [
+     sphinx
+   ];
+-  
++
+   buildInputs = [
+     flit
+   ];
+diff --git a/nix/sphinx-tippy.nix b/nix/sphinx-tippy.nix
+index aa95faa..33ea9b2 100644
+--- a/nix/sphinx-tippy.nix
++++ b/nix/sphinx-tippy.nix
+@@ -13,21 +13,24 @@
+ # limitations under the License.
+ {
+   lib,
++  fetchurl,
+   buildPythonPackage,
+   sphinx,
+   beautifulsoup4,
+   jinja2,
+   requests,
+   flit,
++  version ? "0.4.1",
++  sha256 ? "sha256-nENglralwhDIJnPJp092mZqXXl+hB5rnJYqFM050H3k=",
+ }:
+ buildPythonPackage rec {
+   name = "sphinx-tippy";
+-  version = "0.4.1";
++  inherit version;
+   format = "pyproject";
+ 
+-  src = builtins.fetchurl {
++  src = fetchurl {
+     url = "https://github.com/sphinx-extensions2/sphinx-tippy/archive/refs/tags/v${version}.tar.gz";
+-    sha256 = "sha256:0y8zfi7371ca4pkrl1x1bxg9g6lrfr7sgjbk4v411hm5nsb60hww";
++    inherit sha256;
+   };
+ 
+   propagatedBuildInputs = [
+diff --git a/nix/surelog.nix b/nix/surelog.nix
+index 898370c..98576e9 100644
+--- a/nix/surelog.nix
++++ b/nix/surelog.nix
+@@ -42,6 +42,8 @@
+   gperftools,
+   capnproto,
+   nlohmann_json,
++  rev ? "3e9c2d03c8164f76bf289f141856303477df5dec",
++  sha256 ? "sha256-c4i/1tUONb5sz3OD1w8FSD7VRn/xoBGaVX7ChmujGCk=",
+ }:
+ stdenv.mkDerivation (finalAttrs: {
+   name = "surelog";
+@@ -49,8 +51,8 @@ stdenv.mkDerivation (finalAttrs: {
+   src = fetchFromGitHub {
+     owner = "chipsalliance";
+     repo = finalAttrs.name;
+-    rev = "3e9c2d03c8164f76bf289f141856303477df5dec";
+-    hash = "sha256-c4i/1tUONb5sz3OD1w8FSD7VRn/xoBGaVX7ChmujGCk=";
++    inherit rev;
++    inherit sha256;
+     fetchSubmodules = true; # Use the included UHDM to avoid extreme brainrot
+   };
+ 
+diff --git a/nix/tclFull.nix b/nix/tclFull.nix
+index c41d4e3..44c7384 100644
+--- a/nix/tclFull.nix
++++ b/nix/tclFull.nix
+@@ -15,12 +15,13 @@
+   symlinkJoin,
+   tcl,
+   tcllib,
+-  tclx
+-}: symlinkJoin {
+-    name = "tclFull";
+-    paths = [
+-        tcl
+-        tcllib
+-        tclx
+-    ];
++  tclx,
++}:
++symlinkJoin {
++  name = "tclFull";
++  paths = [
++    tcl
++    tcllib
++    tclx
++  ];
+ }
+diff --git a/nix/verilator.nix b/nix/verilator.nix
+index 2a3c1ff..f8055d8 100644
+--- a/nix/verilator.nix
++++ b/nix/verilator.nix
+@@ -41,16 +41,18 @@
+   which,
+   glibcLocales,
+   lib,
++  rev ? "67dfa37c560385827218350ea936eb1baf604240",
++  sha256 ? "sha256-f06UzNw2MQ5me03EPrVFhkwxKum/GLDzQbDNTBsJMJs=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "verilator";
+-  rev = "67dfa37c560385827218350ea936eb1baf604240";
++  inherit rev;
+ 
+   src = fetchFromGitHub {
+     owner = "verilator";
+     repo = "verilator";
+     inherit rev;
+-    sha256 = "sha256-f06UzNw2MQ5me03EPrVFhkwxKum/GLDzQbDNTBsJMJs=";
++    inherit sha256;
+   };
+ 
+   enableParallelBuilding = true;
+diff --git a/nix/volare.nix b/nix/volare.nix
+deleted file mode 100644
+index 33295c6..0000000
+--- a/nix/volare.nix
++++ /dev/null
+@@ -1,27 +0,0 @@
+-# Copyright 2023 Efabless Corporation
+-#
+-# Licensed under the Apache License, Version 2.0 (the "License");
+-# you may not use this file except in compliance with the License.
+-# You may obtain a copy of the License at
+-#
+-#      http://www.apache.org/licenses/LICENSE-2.0
+-#
+-# Unless required by applicable law or agreed to in writing, software
+-# distributed under the License is distributed on an "AS IS" BASIS,
+-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+-# See the License for the specific language governing permissions and
+-# limitations under the License.
+-{pkgs ? import ./pkgs.nix {}}: let
+-  rev = "47325949b87e857d75f81d306f02ebccf952cb15";
+-  sha256 = "sha256-H9B/vZUs0O2jwmidCTMYhO0JY4DL+gmQNeVawaccvuU=";
+-in let
+-  src = pkgs.fetchFromGitHub {
+-    owner = "efabless";
+-    repo = "volare";
+-    inherit rev;
+-    inherit sha256;
+-  };
+-in
+-  import "${src}" {
+-    inherit pkgs;
+-  }
+diff --git a/nix/yosys-abc.nix b/nix/yosys-abc.nix
+index 1b1ee59..f0b66bc 100644
+--- a/nix/yosys-abc.nix
++++ b/nix/yosys-abc.nix
+@@ -34,6 +34,8 @@
+   fetchFromGitHub,
+   cmake,
+   libedit,
++  rev ? "896e5e7dedf9b9b1459fa019f1fa8aa8101fdf43",
++  sha256 ? "sha256-sMBCIV698TIvU/sgTwgPFWDC1kl2TeGv+3pQ06gs7aM=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "yosys-abc";
+@@ -41,8 +43,8 @@ clangStdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "YosysHQ";
+     repo = "abc";
+-    rev = "896e5e7dedf9b9b1459fa019f1fa8aa8101fdf43";
+-    sha256 = "sha256-sMBCIV698TIvU/sgTwgPFWDC1kl2TeGv+3pQ06gs7aM=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   patches = [
+diff --git a/nix/yosys-eqy.nix b/nix/yosys-eqy.nix
+index f546cc0..1b03606 100644
+--- a/nix/yosys-eqy.nix
++++ b/nix/yosys-eqy.nix
+@@ -21,6 +21,8 @@
+   bitwuzla,
+   zlib,
+   yosys-sby,
++  rev ? "5791c90fa6d6076b3c1ff37a3bd65e66f7748230",
++  sha256 ? "sha256-zgD8jjtK3pvHxOWvCpFyIuLYsJS5AQMrSARcqjFm9Js=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "yosys-eqy";
+@@ -34,8 +36,8 @@ clangStdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "yosyshq";
+     repo = "eqy";
+-    rev = "5791c90fa6d6076b3c1ff37a3bd65e66f7748230";
+-    sha256 = "sha256-zgD8jjtK3pvHxOWvCpFyIuLYsJS5AQMrSARcqjFm9Js=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   makeFlags = [
+diff --git a/nix/yosys-f4pga-sdc.nix b/nix/yosys-f4pga-sdc.nix
+index 8fe8111..9141538 100644
+--- a/nix/yosys-f4pga-sdc.nix
++++ b/nix/yosys-f4pga-sdc.nix
+@@ -20,6 +20,8 @@
+   fetchFromGitHub,
+   zlib,
+   bash,
++  rev ? "dfe9b1a15b494e7dd81a2b394dac30ea707ec5cc",
++  sha256 ? "sha256-NJnu/uFCF+esqV2hrZughn1gdZXQJNTJbl1VyKns3XE=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "yosys-f4pga-sdc";
+@@ -28,8 +30,8 @@ clangStdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "chipsalliance";
+     repo = "yosys-f4pga-plugins";
+-    rev = "dfe9b1a15b494e7dd81a2b394dac30ea707ec5cc";
+-    sha256 = "sha256-NJnu/uFCF+esqV2hrZughn1gdZXQJNTJbl1VyKns3XE=";
++    inherit rev;
++    inherit sha256;
+   };
+   buildInputs = [
+     yosys
+@@ -38,7 +40,7 @@ clangStdenv.mkDerivation rec {
+     libbsd
+     zlib
+   ];
+-  
++
+   preConfigure = ''
+     patchShebangs .
+   '';
+diff --git a/nix/yosys-ghdl.nix b/nix/yosys-ghdl.nix
+index ed1f810..4b3aeb7 100644
+--- a/nix/yosys-ghdl.nix
++++ b/nix/yosys-ghdl.nix
+@@ -38,6 +38,8 @@
+   zlib,
+   ghdl,
+   pkg-config,
++  rev ? "c9b05e481423c55ffcbb856fd5296701f670808c",
++  sha256 ? "sha256-tT2+DXUtbJIBzBUBcyG2sz+3G+dTkciLVIczcRPr0Jw=",
+ }:
+ clangStdenv.mkDerivation {
+   name = "yosys-ghdl";
+@@ -46,8 +48,8 @@ clangStdenv.mkDerivation {
+   src = fetchFromGitHub {
+     owner = "ghdl";
+     repo = "ghdl-yosys-plugin";
+-    rev = "c9b05e481423c55ffcbb856fd5296701f670808c";
+-    sha256 = "sha256-tT2+DXUtbJIBzBUBcyG2sz+3G+dTkciLVIczcRPr0Jw=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   buildInputs = [
+diff --git a/nix/yosys-lighter.nix b/nix/yosys-lighter.nix
+index 887eb57..385b23f 100644
+--- a/nix/yosys-lighter.nix
++++ b/nix/yosys-lighter.nix
+@@ -19,6 +19,8 @@
+   libedit,
+   libbsd,
+   zlib,
++  rev ? "b8e7d4ece5d6e22ab62c03eead761c736dbcaf3c",
++  sha256 ? "sha256-gftQwWrq7KVVQXfb/SThOvbEJK0DoPpiQ3f3X1thBiQ=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "yosys-lighter";
+@@ -27,8 +29,8 @@ clangStdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "aucohl";
+     repo = "lighter";
+-    rev = "b8e7d4ece5d6e22ab62c03eead761c736dbcaf3c";
+-    sha256 = "sha256-gftQwWrq7KVVQXfb/SThOvbEJK0DoPpiQ3f3X1thBiQ=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   buildInputs = [
+diff --git a/nix/yosys-sby.nix b/nix/yosys-sby.nix
+index 65c17be..d2ef1b7 100644
+--- a/nix/yosys-sby.nix
++++ b/nix/yosys-sby.nix
+@@ -21,6 +21,8 @@
+   boolector,
+   z3,
+   yices,
++  rev ? "7415abfcfa8bf14f024f28e61e62f23ccd892415",
++  sha256 ? "sha256-+h+Ddv0FYgovu4ee5e6gA+IiD2wThtzFxOMiGkG99g8=",
+ }:
+ yosys.stdenv.mkDerivation rec {
+   name = "yosys-sby";
+@@ -29,8 +31,8 @@ yosys.stdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "yosyshq";
+     repo = "sby";
+-    rev = "7415abfcfa8bf14f024f28e61e62f23ccd892415";
+-    sha256 = "sha256-+h+Ddv0FYgovu4ee5e6gA+IiD2wThtzFxOMiGkG99g8=";
++    inherit rev;
++    inherit sha256;
+   };
+ 
+   makeFlags = [
+diff --git a/nix/yosys-synlig-sv.nix b/nix/yosys-synlig-sv.nix
+index 3ef9e10..e9dac95 100644
+--- a/nix/yosys-synlig-sv.nix
++++ b/nix/yosys-synlig-sv.nix
+@@ -21,6 +21,8 @@
+   antlr4,
+   pkg-config,
+   writeText,
++  rev ? "fe8f61f1480faa1ea63377c6f60de74e5dca2713",
++  sha256 ? "sha256-IBydjoVCYLAb8fNnjgUC1FthScp/CMP17ljCpSEhErU=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "yosys-synlig-sv";
+@@ -29,8 +31,8 @@ clangStdenv.mkDerivation rec {
+   src = fetchFromGitHub {
+     owner = "chipsalliance";
+     repo = "synlig";
+-    rev = "fe8f61f1480faa1ea63377c6f60de74e5dca2713";
+-    sha256 = "sha256-IBydjoVCYLAb8fNnjgUC1FthScp/CMP17ljCpSEhErU=";
++    inherit rev;
++    inherit sha256;
+   };
+   buildInputs = [
+     yosys
+@@ -51,7 +53,7 @@ clangStdenv.mkDerivation rec {
+     ''${ts}.src_dir         := ''$(shell yosys-config --datdir/include)
+     ''${ts}.mod_dir         := ''${TOP_DIR}third_party/yosys_mod/
+   '';
+-  
++
+   postPatch = ''
+     sed -i 's/AST::process(design, current_ast,/AST::process(design, current_ast, false,/' frontends/systemverilog/uhdm_common_frontend.cc
+     rm third_party/Build.surelog.mk
+diff --git a/nix/yosys.nix b/nix/yosys.nix
+index 21065b6..c406970 100644
+--- a/nix/yosys.nix
++++ b/nix/yosys.nix
+@@ -44,6 +44,8 @@
+   libbsd,
+   libffi,
+   zlib,
++  rev ? "543faed9c8cd7c33bbb407577d56e4b7444ba61c",
++  sha256 ? "sha256-mzMBhnIEgToez6mGFOvO7zBA+rNivZ9OnLQsjBBDamA=",
+ }: let
+   py3env = python3.withPackages (pp:
+     with pp; [
+@@ -56,8 +58,8 @@
+     src = fetchFromGitHub {
+       owner = "YosysHQ";
+       repo = "yosys";
+-      rev = "543faed9c8cd7c33bbb407577d56e4b7444ba61c";
+-      sha256 = "sha256-mzMBhnIEgToez6mGFOvO7zBA+rNivZ9OnLQsjBBDamA=";
++      inherit rev;
++      inherit sha256;
+     };
+ 
+     nativeBuildInputs = [pkg-config bison flex];
+-- 
+2.45.1
+

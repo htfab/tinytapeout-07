@@ -1,0 +1,356 @@
+From df921a9f2b421597f39193131a934cc09ab04450 Mon Sep 17 00:00:00 2001
+From: Kareem Farid <kareefardi@users.noreply.github.com>
+Date: Thu, 9 May 2024 17:21:35 +0300
+Subject: [PATCH 4/8] Hierarchical LVS support (#375)
+
+## Steps
+
+* `steps.Netgen.LVS`:
+  * Add `LVS_FLATTEN_CELLS`: A list of cells to flatten in LVS.
+* Add `LVS_INCLUDE_MARCOS_NETLIST`. If enabled macros' netlist are
+loaded when running LVS. Either `pnl` or `nl` or `vh` views are
+selected.
+* Update Netgen setup file to equate cells inside macros where the GDS
+is generated with blackbox macro option
+
+* `steps.MagicStep.SpiceExtraction`:
+* `MAGIC_EXT_ABSTRACT_CELLS`. A list of regular expressions that are
+matched against the design's cells names what are abstracted
+(black-boxed) during extraction.
+
+## Testing
+
+- Add tests for `LVS_INCLUDE_MARCOS_NETLIST`, `LVS_FLATTEN_CELLS` and
+`MAGIC_EXT_ABSTRACT_CELLS`.
+
+## Tool Updater
+
+* Updated Netgen to `bf67d3c`
+* Updated Volare to `0.17.0`
+---
+ flake.lock                               |  6 +-
+ nix/netgen.nix                           |  4 +-
+ openlane/scripts/magic/extract_spice.tcl | 39 +++++++++++
+ openlane/scripts/netgen/setup.tcl        | 26 ++++++++
+ openlane/steps/magic.py                  | 10 ++-
+ openlane/steps/netgen.py                 | 82 ++++++++++++++++++++++--
+ test/conftest.py                         |  4 +-
+ test/steps/all                           |  2 +-
+ 8 files changed, 156 insertions(+), 17 deletions(-)
+
+diff --git a/flake.lock b/flake.lock
+index 7d5a77b..9efa1bd 100644
+--- a/flake.lock
++++ b/flake.lock
+@@ -84,11 +84,11 @@
+         ]
+       },
+       "locked": {
+-        "lastModified": 1715078431,
+-        "narHash": "sha256-w4NLYQwvE/UFgPZDOnKDpagTjKb8FwKWOp3wV/RvPFM=",
++        "lastModified": 1715167549,
++        "narHash": "sha256-QzMKToqiDQzMjBM2TW1VGMUxSLj70Uk4IdJVjIdkd5c=",
+         "owner": "efabless",
+         "repo": "volare",
+-        "rev": "13ccef8de5d8b27311ffd458ac629953784b5224",
++        "rev": "b72ce150b80f67278d4c6b025183fb3941cab993",
+         "type": "github"
+       },
+       "original": {
+diff --git a/nix/netgen.nix b/nix/netgen.nix
+index bc311c4..bd9e7d1 100644
+--- a/nix/netgen.nix
++++ b/nix/netgen.nix
+@@ -19,8 +19,8 @@
+   tk,
+   m4,
+   python3,
+-  rev ? "87d8759a6980d297edcb9be6f8661867e4726f9a",
+-  sha256 ? "sha256-wTreP/hVlXuo+SOC+jdROeC53o3tOF2M9eQIgX15zRo=",
++  rev ? "bf67d3c2754a6cdcd6cc5fe7e69ea1fddd855dd2",
++  sha256 ? "sha256-XcpGB7jeBbC15HlMpY4JkERc0csS5CxMuSVu6dORbLY=",
+ }:
+ clangStdenv.mkDerivation {
+   name = "netgen";
+diff --git a/openlane/scripts/magic/extract_spice.tcl b/openlane/scripts/magic/extract_spice.tcl
+index 084bf43..35c7106 100644
+--- a/openlane/scripts/magic/extract_spice.tcl
++++ b/openlane/scripts/magic/extract_spice.tcl
+@@ -22,6 +22,45 @@ if { $::env(MAGIC_EXT_USE_GDS) } {
+     read_def
+ }
+ 
++if { [info exists ::env(MAGIC_EXT_ABSTRACT_CELLS)] } {
++    set cells [cellname list allcells]
++    set matching_cells ""
++    foreach expression $::env(MAGIC_EXT_ABSTRACT_CELLS) {
++        set matched 0
++        foreach cell $cells {
++            if { [regexp $expression $cell] } {
++                puts "$cell matched with the expression '$expression'"
++                set matching_cells "$cell $matching_cells"
++                set matched 1
++            }
++        }
++        if { $matched == 0 } {
++            puts "\[WARNING] Failed to match the experssion '$expression' with cells in the design"
++        }
++    }
++    foreach cell $matching_cells {
++        load $cell
++        property LEFview true
++    }
++}
++
++if { [info exists ::env(MAGIC_EXT_ABSTRACT_CELLS_RX)] } {
++    set cells [cellname list allcells]
++    set matching_cells ""
++    foreach expression $::env(MAGIC_EXT_ABSTRACT_CELLS_RX) {
++        foreach cell $cells {
++            if { [regexp $expression $cell] } {
++                puts "$cell matched with $expression"
++                set matching_cells "$cell $matching_cells"
++            }
++        }
++    }
++    foreach cell $matching_cells {
++        load $cell
++        property LEFview true
++    }
++}
++
+ load $::env(DESIGN_NAME) -dereference
+ 
+ set backup $::env(PWD)
+diff --git a/openlane/scripts/netgen/setup.tcl b/openlane/scripts/netgen/setup.tcl
+index 9b439c2..a7f5333 100644
+--- a/openlane/scripts/netgen/setup.tcl
++++ b/openlane/scripts/netgen/setup.tcl
+@@ -1,2 +1,28 @@
+ source $::env(_TCL_ENV_IN)
+ source $::env(NETGEN_SETUP)
++
++#---------------------------------------------------------------
++# Equate prefixed layout cells with corresponding source
++foreach cell $cells1 {
++    set layout $cell
++    while {[regexp {([A-Z][A-Z0-9]_)(.*)} $layout match prefix cellname]} {
++        if {([lsearch $cells2 $cell] < 0) && \
++            ([lsearch $cells2 $cellname] >= 0)} {
++            # netlist with the N names should always be the second netlist
++            equate classes "-circuit2 $cellname" "-circuit1 $cell"
++            puts stdout "Custom: Equating $cell in circuit 1 and $cellname in circuit 2"
++        }
++        set layout $cellname
++    }
++}
++
++if { [info exists ::env(LVS_FLATTEN_CELLS)] } {
++    foreach cell $::env(LVS_FLATTEN_CELLS) {
++        if { [lsearch $cells1 "$cell"] >= 0 } {
++            flatten class "-circuit1 $cell"
++        }
++        if { [lsearch $cells2 "$cell"] >= 0 } {
++            flatten class "-circuit2 $cell"
++        }
++    }
++}
+diff --git a/openlane/steps/magic.py b/openlane/steps/magic.py
+index 3103fc8..38a3eab 100644
+--- a/openlane/steps/magic.py
++++ b/openlane/steps/magic.py
+@@ -84,7 +84,7 @@ class MagicStep(TclStep):
+         Variable(
+             "CELL_MAGLEFS",
+             Optional[List[Path]],
+-            "A list of pre-processed abstract LEF views for cells. Read as a fallback for undefined cells in scripts where cells are blackboxed.",
++            "A list of pre-processed abstract LEF views for cells. Read as a fallback for undefined cells in scripts where cells are black-boxed.",
+             pdk=True,
+         ),
+         Variable(
+@@ -99,7 +99,7 @@ class MagicStep(TclStep):
+     ]
+ 
+     @abstractmethod
+-    def get_script_path(self):
++    def get_script_path(self) -> str:
+         pass
+ 
+     def get_command(self) -> List[str]:
+@@ -400,6 +400,12 @@ class SpiceExtraction(MagicStep):
+             "A flag to choose whether to use GDS for spice extraction or not. If not, then the extraction will be done using the DEF/LEF, which is faster.",
+             default=False,
+         ),
++        Variable(
++            "MAGIC_EXT_ABSTRACT_CELLS",
++            Optional[List[str]],
++            "A list of regular experssions which are matched against the cells of a "
++            + "the design. Matches are abstracted (black-boxed) during SPICE extraction.",
++        ),
+         Variable(
+             "MAGIC_NO_EXT_UNIQUE",
+             bool,
+diff --git a/openlane/steps/netgen.py b/openlane/steps/netgen.py
+index c204402..9d0e1e8 100644
+--- a/openlane/steps/netgen.py
++++ b/openlane/steps/netgen.py
+@@ -14,14 +14,15 @@
+ import os
+ import re
+ import json
++import textwrap
+ from decimal import Decimal
+ from abc import abstractmethod
+-from typing import List, Dict, Tuple
++from typing import List, Dict, Tuple, Optional
+ 
+ from .step import ViewsUpdate, MetricsUpdate, Step
+ from .tclstep import TclStep
+ 
+-from ..common import Path, mkdirp, get_script_dir
++from ..common import Path, mkdirp, get_script_dir, TclUtils
+ from ..config import Variable
+ from ..state import DesignFormat, State
+ 
+@@ -99,6 +100,12 @@ class NetgenStep(TclStep):
+     outputs = []
+ 
+     config_vars = [
++        Variable(
++            "MAGIC_EXT_USE_GDS",
++            bool,
++            "A flag to choose whether to use GDS for spice extraction or not. If not, then the extraction will be done using the DEF/LEF, which is faster.",
++            default=False,
++        ),
+         Variable(
+             "NETGEN_SETUP",
+             Path,
+@@ -109,7 +116,7 @@ class NetgenStep(TclStep):
+     ]
+ 
+     @abstractmethod
+-    def get_script_path(self):
++    def get_script_path(self) -> str:
+         pass
+ 
+     def get_command(self) -> List[str]:
+@@ -131,6 +138,19 @@ class LVS(NetgenStep):
+     id = "Netgen.LVS"
+     name = "Netgen LVS"
+     inputs = [DesignFormat.SPICE, DesignFormat.POWERED_NETLIST]
++    config_vars = NetgenStep.config_vars + [
++        Variable(
++            "LVS_INCLUDE_MARCO_NETLISTS",
++            bool,
++            "A flag that enables including the gate-level netlist of macros while running Netgen",
++            default=False,
++        ),
++        Variable(
++            "LVS_FLATTEN_CELLS",
++            Optional[List[str]],
++            "A list of cell names to be flattened while running LVS",
++        ),
++    ]
+ 
+     def get_command(self) -> List[str]:
+         return super().get_command() + [self.get_script_path()]
+@@ -159,8 +179,6 @@ class LVS(NetgenStep):
+         stats_file_json = os.path.join(reports_dir, "lvs.netgen.json")
+         mkdirp(reports_dir)
+ 
+-        setup_script = os.path.join(get_script_dir(), "netgen", "setup.tcl")
+-
+         with open(self.get_script_path(), "w") as f:
+             for lib in spice_files:
+                 print(
+@@ -171,12 +189,62 @@ class LVS(NetgenStep):
+                     f"readnet spice {lib} 1",
+                     file=f,
+                 )
++        netgen_setup_script = os.path.join(get_script_dir(), "netgen", "setup.tcl")
++        mkdirp(reports_dir)
+ 
++        spice_files_commands = []
++        for lib in spice_files:
++            spice_files_commands.append(
++                f"puts \"Reading SPICE netlist file '{lib}'...\""
++            )
++            spice_files_commands.append(f"readnet spice {lib} $circuit2")
++
++        macros_commands = []
++        macros_commands += [
++            f"readnet verilog {state_in[DesignFormat.POWERED_NETLIST]} $circuit2"
++        ]
++
++        format_list = [
++            DesignFormat.POWERED_NETLIST,
++            DesignFormat.NETLIST,
++            DesignFormat.VERILOG_HEADER,
++        ]
++
++        if self.config["LVS_INCLUDE_MARCO_NETLISTS"]:
++            macros_views = []
++            for view, _ in self.toolbox.get_macro_views_by_priority(
++                self.config, format_list
++            ):
++                macros_views.append(TclUtils.escape(str(view)))
++
++            for netlist in macros_views:
++                macros_commands.append(
++                    f"puts \"Reading Verilog netlist file '{str(netlist)}'...\""
++                )
++                macros_commands.append(f"readnet verilog {str(netlist)} $circuit2")
++
++        netgen_commands = (
++            (
++                textwrap.dedent(
++                    f"""
++                    set circuit1 [readnet spice {state_in[DesignFormat.SPICE]}]
++                    set circuit2 [readnet verilog /dev/null]"""
++                )
++            )
++            .lstrip()
++            .rstrip()
++            .split("\n")
++        )
++        netgen_commands += spice_files_commands
++        netgen_commands += macros_commands
++        netgen_commands += f'lvs "$circuit1 {design_name}" "$circuit2 {design_name}" {netgen_setup_script} {stats_file} -blackbox -json'.split(
++            "\n"
++        )
++        with open(self.get_script_path(), "w") as f:
+             print(
+-                f"lvs {{ {state_in[DesignFormat.SPICE]} {design_name} }} {{ {state_in[DesignFormat.POWERED_NETLIST]} {design_name} }} {setup_script} {stats_file} -json",
++                "\n".join(netgen_commands),
+                 file=f,
+             )
+-
+         views_updates, metrics_updates = super().run(state_in, **kwargs)
+         stats_string = open(stats_file_json).read()
+         lvs_metrics = get_metrics(json.loads(stats_string, parse_float=Decimal))
+diff --git a/test/conftest.py b/test/conftest.py
+index 86616b7..a2e0417 100644
+--- a/test/conftest.py
++++ b/test/conftest.py
+@@ -136,9 +136,9 @@ def _chdir_tmp(request: SubRequest):
+     else:
+         dir = tempfile.mkdtemp()
+         with chdir(dir):
+-            print(f"TMP: {dir}")
++            print(f"\nTMP: {dir}")
+             yield
+-            print(f"TMP: {dir}")
++            print(f"\nTMP: {dir}")
+ 
+ 
+ MOCK_PDK_VARS = [
+diff --git a/test/steps/all b/test/steps/all
+index bc26bd8..77968ec 160000
+--- a/test/steps/all
++++ b/test/steps/all
+@@ -1 +1 @@
+-Subproject commit bc26bd81c03a40667be54aab22ff46293afc93e2
++Subproject commit 77968ec159fa0854ad1f46af8b3ada44e547c840
+-- 
+2.45.1
+

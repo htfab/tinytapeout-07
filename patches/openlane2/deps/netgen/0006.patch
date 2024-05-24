@@ -1,0 +1,42 @@
+From 2d427aef3c73e5c44ed2f79e412f9f731e88bf23 Mon Sep 17 00:00:00 2001
+From: Tim Edwards <tim@opencircuitdesign.com>
+Date: Thu, 9 May 2024 14:11:26 -0400
+Subject: [PATCH 6/9] Corrected the bad placement of #ifdef TCL_NETGEN . . .
+ #endif around critical parts of the netcmp.c code, causing issues with the
+ non-Tcl build (not that anyone should be doing a non-Tcl build).
+
+---
+ VERSION       | 2 +-
+ base/netcmp.c | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/VERSION b/VERSION
+index a851fdf..2a42f81 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.5.273
++1.5.274
+diff --git a/base/netcmp.c b/base/netcmp.c
+index 8c031d5..0c40f97 100644
+--- a/base/netcmp.c
++++ b/base/netcmp.c
+@@ -7204,8 +7204,6 @@ int EquivalenceClasses(char *name1, int file1, char *name2, int file2, int douni
+    return 1;
+ }
+ 
+-#ifdef TCL_NETGEN
+-
+ /*----------------------------------------------------------------------*/
+ /* Callback function used by MatchPins					*/
+ /*----------------------------------------------------------------------*/
+@@ -8412,6 +8410,8 @@ void FlattenCurrent()
+    }
+ }
+ 
++#ifdef TCL_NETGEN
++
+ /*------------------------------------------------------*/
+ /* Handler is only used when netgen is run from a	*/
+ /* terminal, not the Tk console.			*/
+

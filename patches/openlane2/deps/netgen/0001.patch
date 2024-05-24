@@ -1,0 +1,37 @@
+From 94754dbc4e20a947f1a422393f10c1ad52e91c3d Mon Sep 17 00:00:00 2001
+From: Tim Edwards <tim@opencircuitdesign.com>
+Date: Mon, 19 Feb 2024 12:41:08 -0500
+Subject: [PATCH 1/9] Removed the requirement for package "m4" that is in the
+ configuration script.  It is not needed and doesn't exist in many OS
+ distributions.
+
+---
+ VERSION              | 2 +-
+ scripts/configure.in | 6 ------
+ 2 files changed, 1 insertion(+), 7 deletions(-)
+
+diff --git a/VERSION b/VERSION
+index 6347a84..bc4c86e 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.5.270
++1.5.271
+diff --git a/scripts/configure.in b/scripts/configure.in
+index 6da14cd..cbe979b 100644
+--- a/scripts/configure.in
++++ b/scripts/configure.in
+@@ -26,12 +26,6 @@ AC_ISC_POSIX
+ AC_PROG_INSTALL
+ AC_PROG_RANLIB
+ 
+-dnl GNU M4 is preferred due to some of the option switches.
+-AC_PATH_PROGS([M4], [gm4 gnum4 m4], [no])
+-if test x$M4 = xno; then
+-  AC_MSG_ERROR([M4 is required])
+-fi
+-
+ dnl check size of pointer for correct behavior on 64-bit systems
+ dnl If the C preprocessor is GCC, we need to force the flag to
+ dnl assert that input files are of type C, or else the preprocessing
+

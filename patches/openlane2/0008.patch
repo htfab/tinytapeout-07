@@ -1,0 +1,37 @@
+From d32ad2e3b4a25ec76cd5662c708b93b1b79aa5b5 Mon Sep 17 00:00:00 2001
+From: Sylvain Munaut <tnt@246tNt.com>
+Date: Sun, 19 May 2024 14:34:39 +0000
+Subject: [PATCH 8/8] defutil: Respect the net name for power pins when
+ applying DEF templates
+
+You can have different net name than the pin name, this is especially
+useful if you want several pins connected to the same net internally.
+
+Signed-off-by: Sylvain Munaut <tnt@246tNt.com>
+---
+ openlane/scripts/odbpy/defutil.py | 9 ++++++---
+ 1 file changed, 6 insertions(+), 3 deletions(-)
+
+diff --git a/openlane/scripts/odbpy/defutil.py b/openlane/scripts/odbpy/defutil.py
+index b3dc16e..70452f8 100644
+--- a/openlane/scripts/odbpy/defutil.py
++++ b/openlane/scripts/odbpy/defutil.py
+@@ -246,9 +246,12 @@ def relocate_pins(db, input_lefs, template_def, permissive, copy_def_power=False
+             if bterm.getSigType() not in ["POWER", "GROUND"]:
+                 continue
+             pin_name = bterm.getName()
+-            pin_net = odb.dbNet.create(output_block, pin_name, True)
+-            pin_net.setSpecial()
+-            pin_net.setSigType(bterm.getSigType())
++            pin_net_name = bterm.getNet().getName()
++            pin_net = output_block.findNet(pin_net_name)
++            if pin_net is None:
++                pin_net = odb.dbNet.create(output_block, pin_net_name, True)
++                pin_net.setSpecial()
++                pin_net.setSigType(bterm.getSigType())
+             pin_bterm = odb.dbBTerm.create(pin_net, pin_name)
+             pin_bterm.setSigType(bterm.getSigType())
+             output_bterms.append(pin_bterm)
+-- 
+2.45.1
+

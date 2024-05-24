@@ -1,0 +1,35 @@
+From fcee9345806b7cfff3a5e8cf6f7f51fb291789be Mon Sep 17 00:00:00 2001
+From: Tim Edwards <tim@opencircuitdesign.com>
+Date: Tue, 14 May 2024 15:12:41 -0400
+Subject: [PATCH 7/9] Corrected the parsing of the "model" command, which was
+ failing to pass the right cell name to the routine which counts the number of
+ pins.  Using this in a setup file will prevent netgen from spending time
+ matching low-level devices.
+
+---
+ VERSION           | 2 +-
+ tcltk/tclnetgen.c | 3 +--
+ 2 files changed, 2 insertions(+), 3 deletions(-)
+
+diff --git a/VERSION b/VERSION
+index 2a42f81..faca1f6 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.5.274
++1.5.275
+diff --git a/tcltk/tclnetgen.c b/tcltk/tclnetgen.c
+index ddca807..9b6754a 100644
+--- a/tcltk/tclnetgen.c
++++ b/tcltk/tclnetgen.c
+@@ -1595,8 +1595,7 @@ _netgen_model(ClientData clientData,
+       return result;
+ 
+    if (objc == 3) {
+-      model = Tcl_GetString(objv[2]);
+-      nports = NumberOfPorts(model, fnum);
++      nports = NumberOfPorts(tp->name, fnum);
+ 
+       if (Tcl_GetIndexFromObj(interp, objv[2], (CONST84 char **)modelclasses,
+ 		"class", 0, &index) != TCL_OK) {
+

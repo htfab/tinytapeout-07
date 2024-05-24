@@ -1,0 +1,44 @@
+From bf4112db07b7bc79813f989add04858f20ef939a Mon Sep 17 00:00:00 2001
+From: Tim Edwards <tim@opencircuitdesign.com>
+Date: Thu, 16 May 2024 11:49:56 -0400
+Subject: [PATCH 8/9] Corrected two statements that can cause a segfault
+ because a structure variable is not checked for the condition of being NULL
+ before attempting to read a component of the structure.  These conditions
+ imply that something is badly wrong in the netlist but should not be causing
+ a segfault.
+
+---
+ VERSION       | 2 +-
+ base/netgen.c | 4 ++--
+ 2 files changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/VERSION b/VERSION
+index faca1f6..b6bd287 100644
+--- a/VERSION
++++ b/VERSION
+@@ -1 +1 @@
+-1.5.275
++1.5.276
+diff --git a/base/netgen.c b/base/netgen.c
+index 61bf397..32b0177 100644
+--- a/base/netgen.c
++++ b/base/netgen.c
+@@ -3094,7 +3094,7 @@ void add_balancing_close(struct objlist *ob1, struct objlist *ob2)
+    for (nob = ob1->next; nob && nob->type != FIRSTPIN; nob = nob->next)
+       if (nob->type == PROPERTY)
+ 	 break;
+-   if (nob->type != PROPERTY) return;	// shouldn't happen
++   if (nob == NULL || nob->type != PROPERTY) return;	// shouldn't happen
+ 
+    opentags = 0;
+    for (; nob->next && nob->next->type == PROPERTY; nob = nob->next) {
+@@ -3644,7 +3644,7 @@ int CombineSeries(char *model, int file)
+ 	       nob->type = PROPERTY;
+ 	       nob->name = strsave("properties");
+ 	       nob->node = -2;	/* Don't report as disconnected node */
+-	       nob->model.class = (obp->model.class == NULL) ? NULL :
++	       nob->model.class = (obp == NULL || obp->model.class == NULL) ? NULL :
+ 				strsave(obp->model.class);
+ 	       nob->instance.props = NewPropValue(2);
+ 
+

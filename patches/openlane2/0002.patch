@@ -1,0 +1,739 @@
+From 287b4a5ed01e0b7353efaff08d0eb5c6ef1221e0 Mon Sep 17 00:00:00 2001
+From: Mohamed Gaber <donn@efabless.com>
+Date: Wed, 1 May 2024 15:11:02 +0300
+Subject: [PATCH 2/8] Include Nix in the OpenLane 2 Docker Image (#456)
+
+## CLI
+* Docker subprocess is now always run interactively and can be
+interrupted.
+* Docker subprocess now run using `execlp`, replacing the Python
+interpreter.
+
+## Tool Updates
+* Docker image creation now uses a Nix derivation based on that of the
+official Nix Docker image, which includes a full Nix installation in the
+image (so users may add tools and apps in the container at their
+leisure.)
+---
+ .github/workflows/ci.yml |   9 +
+ Makefile                 |   2 +-
+ default.nix              |   4 +
+ flake.nix                |   1 +
+ nix/create-docker.nix    | 372 +++++++++++++++++++++++++++++++++++++++
+ nix/docker.nix           | 122 ++++++-------
+ openlane/__main__.py     |  12 +-
+ openlane/container.py    |  21 +--
+ 8 files changed, 453 insertions(+), 90 deletions(-)
+ create mode 100644 nix/create-docker.nix
+
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 37c7b2a..83be196 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -204,6 +204,15 @@ jobs:
+     needs: [build-linux-amd64, build-linux-aarch64]
+     name: Build Docker Image (${{ matrix.arch }})
+     steps:
++      - name: Maximize build space
++        uses: easimon/maximize-build-space@master
++        with:
++          remove-dotnet: "true"
++          remove-android: "true"
++          remove-haskell: "true"
++          remove-codeql: "true"
++          remove-docker-images: "true"
++          root-reserve-mb: 20480
+       - name: Check out repo
+         uses: actions/checkout@v3
+ 
+diff --git a/Makefile b/Makefile
+index 2dc0276..f5e9120 100644
+--- a/Makefile
++++ b/Makefile
+@@ -19,7 +19,7 @@ openlane:
+ 
+ .PHONY: docker-image
+ docker-image:
+-	cat $(shell nix-build docker.nix) | docker load
++	cat $(shell nix build --no-link --print-out-paths .#openlane-docker -L --verbose) | docker load
+ 
+ .PHONY: docs
+ docs:
+diff --git a/default.nix b/default.nix
+index e432c64..fccc1ff 100644
+--- a/default.nix
++++ b/default.nix
+@@ -39,6 +39,7 @@
+   yosys-ghdl,
+   yosys-f4pga-sdc,
+   # PIP
++  ruby,
+   click,
+   cloup,
+   pyyaml,
+@@ -116,6 +117,9 @@ buildPythonPackage rec {
+       libparse
+       psutil
+       klayout-pymod
++      
++      # Ruby
++      ruby
+     ]
+     ++ includedTools;
+ 
+diff --git a/flake.nix b/flake.nix
+index fa2723e..73bde17 100644
+--- a/flake.nix
++++ b/flake.nix
+@@ -56,6 +56,7 @@
+       );
+ 
+     createOpenLaneShell = import ./nix/create-shell.nix;
++    createDockerImage = import ./nix/create-docker.nix;
+ 
+     # Outputs
+     packages = self.forAllSystems (pkgs: let
+diff --git a/nix/create-docker.nix b/nix/create-docker.nix
+new file mode 100644
+index 0000000..00b1732
+--- /dev/null
++++ b/nix/create-docker.nix
+@@ -0,0 +1,372 @@
++/*
++  Copyright (C) 2012-2017 Eelco Dolstra and the Nix Contributors
++
++  This program is free software; you can redistribute it and/or
++  modify it under the terms of the GNU General Public License
++  as published by the Free Software Foundation; either version 2
++  of the License, or (at your option) any later version.
++
++  This program is distributed in the hope that it will be useful,
++  but WITHOUT ANY WARRANTY; without even the implied warranty of
++  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++  GNU General Public License for more details.
++
++  You should have received a copy of the GNU General Public License
++  along with this program; If not, see <http://www.gnu.org/licenses/>.
++*/
++/*
++  This file is a modified version of
++  https://raw.githubusercontent.com/NixOS/nix/master/docker.nix that exposes
++  more options for the final image and enables the use of sudo.
++*/
++{ pkgs ? import <nixpkgs> { }
++, lib ? pkgs.lib
++, name ? "nix"
++, tag ? "latest"
++, bundleNixpkgs ? true
++, channelName ? "nixpkgs"
++, channelURL ? "https://nixos.org/channels/nixpkgs-unstable"
++, extraPkgs ? []
++, maxLayers ? 100
++, nixConf ? {}
++, flake-registry ? null
++# ADDED
++, image-created ? null
++, image-extraCommands ? ""
++, image-config-cwd ? null
++, image-config-cmd ? [ "/root/.nix-profile/bin/bash" ]
++, image-config-extra-path ? []
++, image-config-extra-env ? []
++}:
++let
++  defaultPkgs = with pkgs; [
++    nix
++    bashInteractive
++    coreutils-full
++    gnutar
++    gzip
++    gnugrep
++    which
++    curl
++    less
++    wget
++    man
++    cacert.out
++    findutils
++    iana-etc
++    git
++    openssh
++    sudo
++    su
++  ] ++ extraPkgs;
++
++  users = {
++
++    root = {
++      uid = 0;
++      shell = "${pkgs.bashInteractive}/bin/bash";
++      home = "/root";
++      gid = 0;
++      groups = [ "root" ];
++      description = "System administrator";
++    };
++
++    nobody = {
++      uid = 65534;
++      shell = "${pkgs.shadow}/bin/nologin";
++      home = "/var/empty";
++      gid = 65534;
++      groups = [ "nobody" ];
++      description = "Unprivileged account (don't use!)";
++    };
++
++  } // lib.listToAttrs (
++    map
++      (
++        n: {
++          name = "nixbld${toString n}";
++          value = {
++            uid = 30000 + n;
++            gid = 30000;
++            groups = [ "nixbld" ];
++            description = "Nix build user ${toString n}";
++          };
++        }
++      )
++      (lib.lists.range 1 32)
++  ) // lib.listToAttrs (
++    map
++      (
++        n: {
++          name = "openlane-user-${toString n}";
++          value = {
++            uid = n;
++            gid = 0;
++            groups = [ "root" ];
++            description = "OpenLane user account";
++          };
++        }
++      )
++      (lib.lists.range 1 29999)
++  );
++
++  groups = {
++    root.gid = 0;
++    nixbld.gid = 30000;
++    nobody.gid = 65534;
++  };
++
++  userToPasswd = (
++    k:
++    { uid
++    , gid ? 65534
++    , home ? "/var/empty"
++    , description ? ""
++    , shell ? "/bin/false"
++    , groups ? [ ]
++    }: "${k}:x:${toString uid}:${toString gid}:${description}:${home}:${shell}"
++  );
++  passwdContents = (
++    lib.concatStringsSep "\n"
++      (lib.attrValues (lib.mapAttrs userToPasswd users))
++  );
++
++  userToShadow = k: { ... }: "${k}:!:1::::::";
++  shadowContents = (
++    lib.concatStringsSep "\n"
++      (lib.attrValues (lib.mapAttrs userToShadow users))
++  );
++
++  # Map groups to members
++  # {
++  #   group = [ "user1" "user2" ];
++  # }
++  groupMemberMap = (
++    let
++      # Create a flat list of user/group mappings
++      mappings = (
++        builtins.foldl'
++          (
++            acc: user:
++              let
++                groups = users.${user}.groups or [ ];
++              in
++              acc ++ map
++                (group: {
++                  inherit user group;
++                })
++                groups
++          )
++          [ ]
++          (lib.attrNames users)
++      );
++    in
++    (
++      builtins.foldl'
++        (
++          acc: v: acc // {
++            ${v.group} = acc.${v.group} or [ ] ++ [ v.user ];
++          }
++        )
++        { }
++        mappings)
++  );
++
++  groupToGroup = k: { gid }:
++    let
++      members = groupMemberMap.${k} or [ ];
++    in
++    "${k}:x:${toString gid}:${lib.concatStringsSep "," members}";
++  groupContents = (
++    lib.concatStringsSep "\n"
++      (lib.attrValues (lib.mapAttrs groupToGroup groups))
++  );
++
++  defaultNixConf = {
++    sandbox = "false";
++    build-users-group = "nixbld";
++    trusted-public-keys = [ "cache.nixos.org-1:6NCHdD59X431o0gWypbMrAURkbJ16ZPMQFGspcDShjY=" ];
++  };
++
++  nixConfContents = (lib.concatStringsSep "\n" (lib.mapAttrsFlatten (n: v:
++    let
++      vStr = if builtins.isList v then lib.concatStringsSep " " v else v;
++    in
++      "${n} = ${vStr}") (defaultNixConf // nixConf))) + "\n";
++
++  baseSystem =
++    let
++      nixpkgs = pkgs.path;
++      channel = pkgs.runCommand "channel-nixos" { inherit bundleNixpkgs; } ''
++        mkdir $out
++        if [ "$bundleNixpkgs" ]; then
++          ln -s ${nixpkgs} $out/nixpkgs
++          echo "[]" > $out/manifest.nix
++        fi
++      '';
++      rootEnv = pkgs.buildPackages.buildEnv {
++        name = "root-profile-env";
++        paths = defaultPkgs;
++      };
++      manifest = pkgs.buildPackages.runCommand "manifest.nix" { } ''
++        cat > $out <<EOF
++        [
++        ${lib.concatStringsSep "\n" (builtins.map (drv: let
++          outputs = drv.outputsToInstall or [ "out" ];
++        in ''
++          {
++            ${lib.concatStringsSep "\n" (builtins.map (output: ''
++              ${output} = { outPath = "${lib.getOutput output drv}"; };
++            '') outputs)}
++            outputs = [ ${lib.concatStringsSep " " (builtins.map (x: "\"${x}\"") outputs)} ];
++            name = "${drv.name}";
++            outPath = "${drv}";
++            system = "${drv.system}";
++            type = "derivation";
++            meta = { };
++          }
++        '') defaultPkgs)}
++        ]
++        EOF
++      '';
++      profile = pkgs.buildPackages.runCommand "user-environment" { } ''
++        mkdir $out
++        cp -a ${rootEnv}/* $out/
++        ln -s ${manifest} $out/manifest.nix
++      '';
++      flake-registry-path = if (flake-registry == null) then
++        null
++      else if (builtins.readFileType (toString flake-registry)) == "directory" then
++        "${flake-registry}/flake-registry.json"
++      else
++        flake-registry;
++    in
++    pkgs.runCommand "base-system"
++      {
++        inherit passwdContents groupContents shadowContents nixConfContents;
++        passAsFile = [
++          "passwdContents"
++          "groupContents"
++          "shadowContents"
++          "nixConfContents"
++        ];
++        allowSubstitutes = false;
++        preferLocalBuild = true;
++      } (''
++      env
++      set -x
++      mkdir -p $out/etc
++
++      mkdir -p $out/etc/ssl/certs
++      ln -s /nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt $out/etc/ssl/certs
++
++      cat $passwdContentsPath > $out/etc/passwd
++      echo "" >> $out/etc/passwd
++
++      cat $groupContentsPath > $out/etc/group
++      echo "" >> $out/etc/group
++
++      cat $shadowContentsPath > $out/etc/shadow
++      echo "" >> $out/etc/shadow
++
++      mkdir -p $out/usr
++      ln -s /nix/var/nix/profiles/share $out/usr/
++
++      mkdir -p $out/nix/var/nix/gcroots
++
++      mkdir $out/tmp
++
++      mkdir -p $out/var/tmp
++
++      mkdir -p $out/etc/nix
++      cat $nixConfContentsPath > $out/etc/nix/nix.conf
++
++      mkdir -p $out/root
++      mkdir -p $out/nix/var/nix/profiles/per-user/root
++
++      ln -s ${profile} $out/nix/var/nix/profiles/default-1-link
++      ln -s $out/nix/var/nix/profiles/default-1-link $out/nix/var/nix/profiles/default
++      ln -s /nix/var/nix/profiles/default $out/root/.nix-profile
++
++      ln -s ${channel} $out/nix/var/nix/profiles/per-user/root/channels-1-link
++      ln -s $out/nix/var/nix/profiles/per-user/root/channels-1-link $out/nix/var/nix/profiles/per-user/root/channels
++
++      mkdir -p $out/root/.nix-defexpr
++      ln -s $out/nix/var/nix/profiles/per-user/root/channels $out/root/.nix-defexpr/channels
++      echo "${channelURL} ${channelName}" > $out/root/.nix-channels
++
++      mkdir -p $out/bin $out/usr/bin
++      ln -s ${pkgs.coreutils}/bin/env $out/usr/bin/env
++      ln -s ${pkgs.bashInteractive}/bin/bash $out/bin/sh
++
++    '' + (lib.optionalString (flake-registry-path != null) ''
++      nixCacheDir="/root/.cache/nix"
++      mkdir -p $out$nixCacheDir
++      globalFlakeRegistryPath="$nixCacheDir/flake-registry.json"
++      ln -s ${flake-registry-path} $out$globalFlakeRegistryPath
++      mkdir -p $out/nix/var/nix/gcroots/auto
++      rootName=$(${pkgs.nix}/bin/nix --extra-experimental-features nix-command hash file --type sha1 --base32 <(echo -n $globalFlakeRegistryPath))
++      ln -s $globalFlakeRegistryPath $out/nix/var/nix/gcroots/auto/$rootName
++    ''));
++
++in
++pkgs.dockerTools.buildLayeredImageWithNixDb {
++
++  inherit name tag maxLayers;
++
++  contents = [ baseSystem ];
++
++  extraCommands = ''
++    rm -rf nix-support
++    ln -s /nix/var/nix/profiles nix/var/nix/gcroots/profiles
++  '' + image-extraCommands;
++  fakeRootCommands = let 
++    sudo = pkgs.sudo;
++    sudoLocalPath = (builtins.substring 1 999 "${sudo}/bin/sudo");
++  in ''
++    set -e
++    chmod 1777 tmp
++    chmod 1777 var/tmp
++    
++    # Enable sudo for all users (so they can use nix)
++    cp -r ${sudo} nix/store
++    
++    chmod u+s ${sudoLocalPath}
++    echo "ALL ALL=(ALL) NOPASSWD:ALL" > etc/sudoers
++    
++    mkdir -p etc/pam.d
++    if [[ ! -f etc/pam.d/other ]]; then
++      cat > etc/pam.d/other <<EOF
++    account sufficient pam_unix.so
++    auth sufficient pam_rootok.so
++    password requisite pam_unix.so nullok yescrypt
++    session required pam_unix.so
++    EOF
++    fi
++    if [[ ! -f etc/login.defs ]]; then
++      touch etc/login.defs
++    fi
++  '';
++
++  config = {
++    Cmd = image-config-cmd;
++    WorkingDir = image-config-cwd;
++    Env = [
++      "USER=root"
++      "PATH=${lib.concatStringsSep ":" (image-config-extra-path ++ [
++        "/root/.nix-profile/bin"
++        "/nix/var/nix/profiles/default/bin"
++        "/nix/var/nix/profiles/default/sbin"
++      ])}"
++      "MANPATH=${lib.concatStringsSep ":" [
++        "/root/.nix-profile/share/man"
++        "/nix/var/nix/profiles/default/share/man"
++      ]}"
++      "SSL_CERT_FILE=/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt"
++      "GIT_SSL_CAINFO=/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt"
++      "NIX_SSL_CERT_FILE=/nix/var/nix/profiles/default/etc/ssl/certs/ca-bundle.crt"
++      "NIX_PATH=/nix/var/nix/profiles/per-user/root/channels:/root/.nix-defexpr/channels"
++    ] ++ image-config-extra-env;
++  };
++
++}
+diff --git a/nix/docker.nix b/nix/docker.nix
+index e8a0b61..0e50ac7 100644
+--- a/nix/docker.nix
++++ b/nix/docker.nix
+@@ -13,81 +13,69 @@
+ # limitations under the License.
+ {
+   dockerTools,
+-  buildEnv,
++  system,
++  pkgs,
++  lib,
+   python3,
+   openlane,
+-  system,
+-  coreutils-full,
+-  findutils,
+-  bashInteractive,
+-  gnugrep,
+-  gnused,
+-  which,
+-  cacert,
+-  iana-etc,
+   git,
+   neovim,
+   zsh,
+   silver-searcher,
+-}: let
++  coreutils,
++}:
++let
++  # # We're fetchurl-ing this one so we don't want to use a fixed-output derivation
++  # # like fetchFromGitHub
++  # # See https://nixos.org/manual/nix/stable/language/import-from-derivation
++  # nix-docker-image-script = builtins.fetchurl {
++  #   url = "https://raw.githubusercontent.com/NixOS/nix/master/docker.nix";
++  #   sha256 = "sha256:0kpj0ms09v7ss86cayf3snpsl6pnjgjzk5wcsfp16ggvr2as80ai";
++  # };
+   openlane-env = python3.withPackages (ps: with ps; [openlane]);
+   openlane-env-sitepackages = "${openlane-env}/${openlane-env.sitePackages}";
+   openlane-env-bin = "${openlane-env}/bin";
+-in
+-  dockerTools.buildImage rec {
+-    name = "openlane";
+-    tag = "tmp-${system}";
+-
+-    copyToRoot = buildEnv {
+-      name = "image-root";
+-      paths = [
+-        # Base OS
+-        ## GNU
+-        coreutils-full
+-        findutils
+-        bashInteractive
+-        gnugrep
+-        gnused
+-        which
+-
+-        ## Networking
+-        cacert
+-        iana-etc
+-
+-        # Conveniences
+-        git
+-        neovim
+-        zsh
+-        silver-searcher
+-
+-        # OpenLane
+-        openlane-env
+-      ];
+-
+-      postBuild = ''
+-        mkdir -p $out/tmp
+-        mkdir -p $out/etc
+-        cat <<HEREDOC > $out/etc/zshrc
+-        autoload -U compinit && compinit
+-        autoload -U promptinit && promptinit && prompt suse && setopt prompt_sp
+-        autoload -U colors && colors
++in (import ./create-docker.nix {
++  inherit pkgs;
++  inherit lib;
++  name = "openlane";
++  tag = "tmp-${system}";
++  extraPkgs = with dockerTools; [
++    git
++    zsh
++    neovim
++    silver-searcher
+ 
+-        export PS1=$'%{\033[31m%}OpenLane Container (${openlane.version})%{\033[0m%}:%{\033[32m%}%~%{\033[0m%}%% ';
+-        HEREDOC
+-      '';
+-    };
++    openlane-env
++  ];
++  nixConf = {
++    extra-experimental-features = "nix-command flakes repl-flake";
++  };
++  maxLayers = 2;
++  channelURL = "https://nixos.org/channels/nixos-23.11";
++  
++  image-created = "now";
++  image-extraCommands = ''
++    mkdir -p ./etc
++    cat <<HEREDOC > ./etc/zshrc
++    autoload -U compinit && compinit
++    autoload -U promptinit && promptinit && prompt suse && setopt prompt_sp
++    autoload -U colors && colors
+ 
+-    created = "now";
+-    config = {
+-      Cmd = ["/bin/env" "zsh"];
+-      Env = [
+-        "LANG=C.UTF-8"
+-        "LC_ALL=C.UTF-8"
+-        "LC_CTYPE=C.UTF-8"
+-        "EDITOR=nvim"
+-        "PYTHONPATH=${openlane-env-sitepackages}"
+-        "PATH=${openlane-env-bin}:${openlane.computed_PATH}:/bin"
+-        "TMPDIR=/tmp"
+-      ];
+-    };
+-  }
++    export PS1=$'%{\033[31m%}OpenLane Container (${openlane.version})%{\033[0m%}:%{\033[32m%}%~%{\033[0m%}%% ';
++    HEREDOC
++  '';
++  image-config-cmd = ["${zsh}/bin/zsh"];
++  image-config-extra-env = [
++      "LANG=C.UTF-8"
++      "LC_ALL=C.UTF-8"
++      "LC_CTYPE=C.UTF-8"
++      "EDITOR=nvim"
++      "PYTHONPATH=${openlane-env-sitepackages}"
++      "TMPDIR=/tmp"
++  ];
++  image-config-extra-path = [
++    "${openlane-env-bin}"
++    "${openlane.computed_PATH}"
++  ];
++})
+diff --git a/openlane/__main__.py b/openlane/__main__.py
+index 69f303c..8b120d1 100644
+--- a/openlane/__main__.py
++++ b/openlane/__main__.py
+@@ -286,39 +286,31 @@ def cli_in_container(
+     if not value:
+         return
+ 
+-    status = 0
+     docker_mounts = list(ctx.params.get("docker_mounts") or ())
+     docker_tty: bool = ctx.params.get("docker_tty", True)
+     pdk_root = ctx.params.get("pdk_root")
+     argv = sys.argv[sys.argv.index("--dockerized") + 1 :]
+ 
+-    interactive = True
+     final_argv = ["zsh"]
+     if len(argv) != 0:
+         final_argv = ["openlane"] + argv
+-        interactive = False
+ 
+     docker_image = os.getenv(
+         "OPENLANE_IMAGE_OVERRIDE", f"ghcr.io/efabless/openlane2:{__version__}"
+     )
+ 
+     try:
+-        status = run_in_container(
++        run_in_container(
+             docker_image,
+             final_argv,
+             pdk_root=pdk_root,
+             other_mounts=docker_mounts,
+-            interactive=interactive,
+             tty=docker_tty,
+         )
+     except ValueError as e:
+         print(e)
+-        status = -1
+     except Exception:
+         traceback.print_exc()
+-        status = -1
+-    finally:
+-        ctx.exit(status)
+ 
+ 
+ o = partial(option, show_default=True)
+@@ -366,7 +358,7 @@ o = partial(option, show_default=True)
+         "--dockerized",
+         default=False,
+         is_flag=True,
+-        is_eager=True,  # ddocker options should be processed before anything else
++        is_eager=True,  # docker options should be processed before anything else
+         help="Run the remaining flags using a Docker container. Some caveats apply. Must precede all options except --docker-mount, --docker-tty/--docker-no-tty.",
+         callback=cli_in_container,
+     ),
+diff --git a/openlane/container.py b/openlane/container.py
+index 0f990e1..bb39ce9 100644
+--- a/openlane/container.py
++++ b/openlane/container.py
+@@ -15,12 +15,13 @@
+ ## This file is internal to OpenLane 2 and is not part of the API.
+ import os
+ import re
++import uuid
+ import httpx
+ import shlex
+ import pathlib
+ import tempfile
+ import subprocess
+-from typing import List, Sequence, Optional, Union, Tuple
++from typing import List, NoReturn, Sequence, Optional, Union, Tuple
+ 
+ from .common import mkdirp
+ from .logging import err, info, warn
+@@ -154,9 +155,8 @@ def run_in_container(
+     pdk: Optional[str] = None,
+     scl: Optional[str] = None,
+     other_mounts: Optional[Sequence[str]] = None,
+-    interactive: bool = False,
+     tty: bool = False,
+-) -> int:
++) -> NoReturn:
+     # If imported at the top level, would interfere with Conda where Volare
+     # would not be installed.
+     import volare
+@@ -173,9 +173,7 @@ def run_in_container(
+     if not ensure_image(image):
+         raise ValueError(f"Failed to use image '{image}'.")
+ 
+-    terminal_args = []
+-    if interactive:
+-        terminal_args.append("-i")
++    terminal_args = ["-i"]
+     if tty:
+         terminal_args.append("-t")
+ 
+@@ -230,11 +228,15 @@ def run_in_container(
+             else:
+                 mount_args += ["-v", f"{mount}"]
+ 
++    container_id = str(uuid.uuid4())
++
+     cmd = (
+         [
+             CONTAINER_ENGINE,
+             "run",
+             "--rm",
++            "--name",
++            container_id,
+         ]
+         + terminal_args
+         + permission_args(osinfo)
+@@ -247,9 +249,4 @@ def run_in_container(
+     info("Running containerized command:")
+     print(shlex.join(cmd))
+ 
+-    result = subprocess.call(
+-        cmd,
+-        stderr=subprocess.STDOUT,
+-    )
+-
+-    return result
++    os.execlp(CONTAINER_ENGINE, *cmd)
+-- 
+2.45.1
+

@@ -1,0 +1,61 @@
+From 1a5162656cfee1a6e5f30d9ecbe0b5d9d8354dae Mon Sep 17 00:00:00 2001
+From: Mohamed Gaber <donn@efabless.com>
+Date: Tue, 14 May 2024 17:01:58 +0300
+Subject: [PATCH] Added Python SWIG typemaps for returning vectors of
+ float/layer pairs by reference
+
+As instructed in https://github.com/The-OpenROAD-Project/OpenROAD/pull/4733#issuecomment-1982006670, this allows the following functions to be called (and the results inspected) from Python:
+
+* `dbMTerm::getDiffArea`
+* `dbTechAntennaPinModel::getGateArea`
+* `dbTechAntennaPinModel::getMaxAreaCAR`
+* `dbTechAntennaPinModel::getMaxSideAreaCAR`
+* `dbTechAntennaPinModel::getMaxCutCAR`
+
+Signed-off-by: Mohamed Gaber <donn@efabless.com>
+---
+ src/odb/src/swig/python/dbtypes.i | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/src/odb/src/swig/python/dbtypes.i b/src/odb/src/swig/python/dbtypes.i
+index d5d8b9b4ce8..0021fa062db 100644
+--- a/src/odb/src/swig/python/dbtypes.i
++++ b/src/odb/src/swig/python/dbtypes.i
+@@ -242,6 +242,11 @@ WRAP_OBJECT_RETURN_REF(odb::dbViaParams, params_return)
+ %typemap(in, numinputs=1) std::vector<odb::dbShape> &OUTPUT (std::vector<odb::dbShape> temp) {
+    $1 = new std::vector<odb::dbShape>(temp);
+ }
++
++%typemap(in, numinputs=0) std::vector<std::pair<double, odb::dbTechLayer*>> &OUTPUT (std::vector<std::pair<double, odb::dbTechLayer*>> temp) {
++   $1 = new std::vector<std::pair<double, dbTechLayer*>>(temp);
++}
++
+ %typemap(argout) std::vector<odb::dbShape> &OUTPUT {
+   swig_type_info *tf = SWIG_TypeQuery("odb::dbShape" "*");
+   for(std::vector<odb::dbShape>::iterator it = $1->begin(); it != $1->end(); it++) {
+@@ -250,6 +255,18 @@ WRAP_OBJECT_RETURN_REF(odb::dbViaParams, params_return)
+   }
+ }
+ 
++%typemap(argout) std::vector<std::pair<double, odb::dbTechLayer*>> &OUTPUT {
++  $result = PyList_New(0);
++  swig_type_info *tf = SWIG_TypeQuery("odb::dbTechLayer" "*");
++  for(auto it = $1->begin(); it != $1->end(); it++) {
++    auto value = it->first;
++    auto layer = it->second;
++    PyObject *layer_swig = SWIG_NewInstanceObj(layer, tf, 0);
++    PyObject *tuple = PyTuple_Pack(2, PyFloat_FromDouble(value), layer_swig);
++    $result = SWIG_Python_AppendOutput($result, tuple);
++  }
++}
++
+ %typemap(argout) std::vector<int> &OUTPUT {
+   for(auto it = $1->begin(); it != $1->end(); it++) {
+     PyObject *obj = PyInt_FromLong((long)*it);
+@@ -258,5 +275,6 @@ WRAP_OBJECT_RETURN_REF(odb::dbViaParams, params_return)
+ }
+ 
+ %apply std::vector<odb::dbShape> &OUTPUT { std::vector<odb::dbShape> & shapes };
++%apply std::vector<std::pair<double, odb::dbTechLayer*>> &OUTPUT { std::vector<std::pair<double, odb::dbTechLayer*>> & data };
+ 
+ %include containers.i

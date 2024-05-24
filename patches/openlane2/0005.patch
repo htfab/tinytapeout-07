@@ -1,0 +1,345 @@
+From 26075b58e93ec7bbb1a3cb9ce294eca2a464e0ab Mon Sep 17 00:00:00 2001
+From: Mohamed Gaber <donn@efabless.com>
+Date: Wed, 15 May 2024 14:31:05 +0300
+Subject: [PATCH 5/8] * `openroad` -> `a515fc6`   * Removed OpenLane-specific
+ patch for querying existence of antenna information   * `openroad-abc` ->
+ `ef5389d`     * `ABC_USE_NAMESPACE` now set, result injected into header file
+   * `opensta` -> `ee8d3d0`
+
+---
+ nix/openroad-abc.nix                          |  8 +-
+ nix/openroad.nix                              |  6 +-
+ nix/opensta.nix                               |  6 +-
+ nix/patches/openroad-abc/zlib.patch           | 78 +++++++++++--------
+ nix/patches/openroad/antenna.patch            | 64 ---------------
+ nix/patches/openroad/rmp_abc.patch            | 15 ++++
+ .../scripts/odbpy/check_antenna_properties.py | 14 ++--
+ 7 files changed, 82 insertions(+), 109 deletions(-)
+ delete mode 100644 nix/patches/openroad/antenna.patch
+ create mode 100644 nix/patches/openroad/rmp_abc.patch
+
+diff --git a/nix/openroad-abc.nix b/nix/openroad-abc.nix
+index e7bf053..b6b669e 100644
+--- a/nix/openroad-abc.nix
++++ b/nix/openroad-abc.nix
+@@ -16,8 +16,9 @@
+   abc-verifier,
+   fetchFromGitHub,
+   zlib,
+-  rev ? "d3916ac0337d599b30aeaf94e82b13338530ced3",
+-  sha256 ? "sha256-osJzeOb0bgvbPGJjcpcfQzwcRJTZh1DYJ7RpFgw1NKg=",
++  abc-namespace-name ? "abc",
++  rev ? "ef5389d31526003c2ebd7e6d6d6fe3848a20f0a2",
++  sha256 ? "sha256-7W66b1Toa9uEAKoijPujqQXVjxf1Ku4w2eP2Vk0ri8c=",
+ }:
+ abc-verifier.overrideAttrs (finalAttrs: previousAttrs: {
+   name = "openroad-abc";
+@@ -36,6 +37,7 @@ abc-verifier.overrideAttrs (finalAttrs: previousAttrs: {
+   cmakeFlags = [
+     "-DREADLINE_FOUND=FALSE"
+     "-DUSE_SYSTEM_ZLIB:BOOL=ON"
++    "-DABC_USE_NAMESPACE=${abc-namespace-name}"
+   ];
+ 
+   buildInputs = [zlib];
+@@ -54,6 +56,8 @@ abc-verifier.overrideAttrs (finalAttrs: previousAttrs: {
+     mkdir -p $header_dir
+     cp ../src/$header $header_tgt
+     done
++    
++    sed -Ei "/#\s*ifdef ABC_NAMESPACE/i#define ABC_NAMESPACE abc\n" $out/include/misc/util/abc_namespaces.h
+   '';
+ 
+   meta = with lib; {
+diff --git a/nix/openroad.nix b/nix/openroad.nix
+index 3568772..07c259f 100644
+--- a/nix/openroad.nix
++++ b/nix/openroad.nix
+@@ -42,8 +42,8 @@
+   bison,
+   clang-tools_14,
+   ioplace-parser,
+-  rev ? "d423155d69de7f683a23f6916ead418a615ad4ad",
+-  sha256 ? "sha256-RrJYdvzxD64TeNAlPs6G4BKxflpQO6ED78SqQVH7EUE=",
++  rev ? "a515fc6cc97a7092efd51a28c1414e2fb4e53413",
++  sha256 ? "sha256-uZGqGhYg1ofyAd6aH94HS4sJNOJz6oWArHzUriPV3EQ=",
+ }: let
+   pyenv = python3.withPackages (p:
+     with p; [
+@@ -117,7 +117,7 @@ in
+     ];
+ 
+     patches = [
+-      ./patches/openroad/antenna.patch
++      ./patches/openroad/rmp_abc.patch
+     ];
+ 
+     nativeBuildInputs = [
+diff --git a/nix/opensta.nix b/nix/opensta.nix
+index c01a50a..d297778 100644
+--- a/nix/opensta.nix
++++ b/nix/opensta.nix
+@@ -23,8 +23,9 @@
+   bison,
+   tcl,
+   zlib,
+-  rev ? "a7f34210b403fe399c170296d54258f10f92885f",
+-  sha256 ? "sha256-2R+ox0kcjXX5Kc6dtH/OEOccU/m8FjW1qnb0kxM/ahE=",
++  eigen,
++  rev ? "ee8d3d0fa23bfbc69f3e936ff884c3d30f5bfb59",
++  sha256 ? "sha256-ZLCXEmuSxGnht/ILLQSpOGHlJiDHo6gHUp+ZjV+6wxQ=",
+ }:
+ clangStdenv.mkDerivation rec {
+   name = "opensta";
+@@ -43,6 +44,7 @@ clangStdenv.mkDerivation rec {
+   ];
+ 
+   buildInputs = [
++    eigen
+     tcl
+     zlib
+   ];
+diff --git a/nix/patches/openroad-abc/zlib.patch b/nix/patches/openroad-abc/zlib.patch
+index 05ce3d3..9372830 100644
+--- a/nix/patches/openroad-abc/zlib.patch
++++ b/nix/patches/openroad-abc/zlib.patch
+@@ -1,25 +1,28 @@
+ diff --git a/CMakeLists.txt b/CMakeLists.txt
+-index 4388b50d..b23ccdbf 100644
++index b90ac02d..b0d6b13f 100644
+ --- a/CMakeLists.txt
+ +++ b/CMakeLists.txt
+-@@ -57,6 +57,8 @@ if( APPLE )
++@@ -61,6 +61,11 @@ if( APPLE )
+      set(make_env ${CMAKE_COMMAND} -E env SDKROOT=${CMAKE_OSX_SYSROOT})
+  endif()
+  
+-+option(USE_SYSTEM_ZLIB "Use system shared ZLIB" OFF)
+++option(ABC_USE_SYSTEM_ZLIB "Use system shared ZLIB" OFF)
+++if(ABC_USE_SYSTEM_ZLIB)
+++    set(ABC_USE_SYSTEM_ZLIB_FLAGS "ABC_USE_SYSTEM_ZLIB=${ABC_USE_SYSTEM_ZLIB}")
+++endif()
+ +
+  # run make to extract compiler options, linker options and list of source files
+  execute_process(
+    COMMAND
+-@@ -70,6 +72,7 @@ execute_process(
++@@ -69,6 +74,7 @@ execute_process(
++         ${ABC_READLINE_FLAGS}
++         ${ABC_USE_NAMESPACE_FLAGS}
++         ${ABC_USE_STDINT_H_FLAGS}
+++        ${ABC_USE_SYSTEM_ZLIB_FLAGS}
++         ARCHFLAGS_EXE=${CMAKE_CURRENT_BINARY_DIR}/abc_arch_flags_program.exe
++         ABC_MAKE_NO_DEPS=1
+          CC=${CMAKE_C_COMPILER}
+-         CXX=${CMAKE_CXX_COMPILER}
+-         LD=${CMAKE_CXX_COMPILER}
+-+        USE_SYSTEM_ZLIB=${USE_SYSTEM_ZLIB}
+-         cmake_info
+-   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+-   OUTPUT_VARIABLE MAKE_OUTPUT
+-@@ -94,10 +97,16 @@ if(ABC_USE_NAMESPACE)
++@@ -98,10 +104,16 @@ if(ABC_USE_NAMESPACE)
+      set_source_files_properties(${ABC_SRC} PROPERTIES LANGUAGE CXX)
+  endif()
+  
+@@ -30,27 +33,18 @@ index 4388b50d..b23ccdbf 100644
+      target_include_directories(${target} ${visibility} ${CMAKE_CURRENT_SOURCE_DIR}/src )
+      target_compile_options_filtered(${target} ${visibility} ${ABC_CFLAGS} ${ABC_CXXFLAGS} -Wno-unused-but-set-variable )
+      target_link_libraries(${target} ${visibility} ${ABC_LIBS})
+-+    if(USE_SYSTEM_ZLIB)
+++    if(ABC_USE_SYSTEM_ZLIB)
+ +        target_link_libraries(${target} ${visibility} ZLIB::ZLIB)
+ +    endif()
+  endfunction()
+  
+  set(ABC_MAIN_SRC src/base/main/main.c)
+ diff --git a/Makefile b/Makefile
+-index 556c5f0e..e9a46d27 100644
++index e94591b2..89e2500b 100644
+ --- a/Makefile
+ +++ b/Makefile
+-@@ -15,6 +15,8 @@ $(info $(MSG_PREFIX)Using LD=$(LD))
+- PROG := abc
+- OS := $(shell uname -s)
+- 
+-+USE_SYSTEM_ZLIB ?= OFF
+-+
+- MODULES := \
+- 	$(wildcard src/ext*) \
+- 	src/base/abc src/base/abci src/base/cmd src/base/io src/base/main src/base/exor \
+-@@ -22,7 +24,7 @@ MODULES := \
+- 	src/map/mapper src/map/mio src/map/super src/map/if \
++@@ -22,7 +22,7 @@ MODULES := \
++ 	src/map/mapper src/map/mio src/map/super src/map/if src/map/if/acd \
+  	src/map/amap src/map/cov src/map/scl src/map/mpm \
+  	src/misc/extra src/misc/mvc src/misc/st src/misc/util src/misc/nm \
+ -	src/misc/vec src/misc/hash src/misc/tim src/misc/bzlib src/misc/zlib \
+@@ -58,14 +52,36 @@ index 556c5f0e..e9a46d27 100644
+  	src/misc/mem src/misc/bar src/misc/bbl src/misc/parse \
+  	src/opt/cut src/opt/fxu src/opt/fxch src/opt/rwr src/opt/mfs src/opt/sim \
+  	src/opt/ret src/opt/fret src/opt/res src/opt/lpk src/opt/nwk src/opt/rwt \
+-@@ -35,6 +37,10 @@ MODULES := \
+- 	src/aig/aig src/aig/saig src/aig/gia src/aig/ioa src/aig/ivy src/aig/hop \
+- 	src/aig/miniaig
++@@ -45,6 +45,12 @@ $(ARCHFLAGS_EXE) : arch_flags.c
++ 
++ INCLUDES += -I$(ABCSRC)/src
+  
+-+ifneq (${USE_SYSTEM_ZLIB},ON)
+-+MODULES += src/misc/zlib
+++ifdef ABC_USE_SYSTEM_ZLIB
+++	CFLAGS += -DUSE_SYSTEM_ZLIB
+++else
+++	MODULES += src/misc/zlib
+ +endif
+ +
+- all: $(PROG)
+- default: $(PROG)
++ # Use C99 stdint.h header for platform-dependent types
++ ifdef ABC_USE_STDINT_H
++     ARCHFLAGS ?= -DABC_USE_STDINT_H=1
++diff --git a/src/misc/zlib/zlib.h b/src/misc/zlib/zlib.h
++index 46c1a1ae..1667a8cf 100644
++--- a/src/misc/zlib/zlib.h
+++++ b/src/misc/zlib/zlib.h
++@@ -28,6 +28,10 @@
++   (zlib format), rfc1951.txt (deflate format) and rfc1952.txt (gzip format).
++ */
++ 
+++#ifdef USE_SYSTEM_ZLIB
+++#include "misc/util/abc_global.h"
+++#include <zlib.h>
+++#else
++ #ifndef ZLIB_H
++ #define ZLIB_H
++ 
++@@ -1617,3 +1621,4 @@ ZEXTERN int            ZEXPORT inflateUndermine OF((z_streamp, int));
++ ABC_NAMESPACE_HEADER_END
+  
++ #endif /* ZLIB_H */
+++#endif /* USE_SYSTEM_ZLIB */
+diff --git a/nix/patches/openroad/antenna.patch b/nix/patches/openroad/antenna.patch
+deleted file mode 100644
+index b9d0c99..0000000
+--- a/nix/patches/openroad/antenna.patch
++++ /dev/null
+@@ -1,64 +0,0 @@
+-diff --git a/src/odb/include/odb/db.h b/src/odb/include/odb/db.h
+-index 02e9f36d8..3642a153c 100644
+---- a/src/odb/include/odb/db.h
+-+++ b/src/odb/include/odb/db.h
+-@@ -5704,6 +5704,8 @@ class dbMTerm : public dbObject
+-   // From LEF's ANTENNADIFFAREA on the MACRO's PIN
+-   void getDiffArea(std::vector<std::pair<double, dbTechLayer*>>& data);
+- 
+-+  bool hasDiffArea();
+-+
+-   void* staPort();
+-   void staSetPort(void* port);
+- 
+-@@ -6665,6 +6667,7 @@ class dbTechAntennaPinModel : public dbObject
+-   void addMaxSideAreaCAREntry(double inval, dbTechLayer* refly = nullptr);
+-   void addMaxCutCAREntry(double inval, dbTechLayer* refly = nullptr);
+- 
+-+  bool hasGateArea();
+-   void getGateArea(std::vector<std::pair<double, dbTechLayer*>>& data);
+-   void getMaxAreaCAR(std::vector<std::pair<double, dbTechLayer*>>& data);
+-   void getMaxSideAreaCAR(std::vector<std::pair<double, dbTechLayer*>>& data);
+-diff --git a/src/odb/src/db/dbMTerm.cpp b/src/odb/src/db/dbMTerm.cpp
+-index 5d82e751b..f87dca48f 100644
+---- a/src/odb/src/db/dbMTerm.cpp
+-+++ b/src/odb/src/db/dbMTerm.cpp
+-@@ -490,6 +490,16 @@ void dbMTerm::getDiffArea(std::vector<std::pair<double, dbTechLayer*>>& data)
+-       mterm->getDatabase(), mterm->_diffarea, data);
+- }
+- 
+-+bool dbMTerm::hasDiffArea()
+-+{
+-+  std::vector<std::pair<double, dbTechLayer*>> diff_areas;
+-+  getDiffArea(diff_areas);
+-+  if (diff_areas.size() > 0)
+-+    return true;
+-+  else
+-+    return false;
+-+}
+-+
+- void dbMTerm::writeAntennaLef(lefout& writer) const
+- {
+-   _dbMTerm* mterm = (_dbMTerm*) this;
+-diff --git a/src/odb/src/db/dbTechLayerAntennaRule.cpp b/src/odb/src/db/dbTechLayerAntennaRule.cpp
+-index 6b10d2b3c..a7c5f8bb6 100644
+---- a/src/odb/src/db/dbTechLayerAntennaRule.cpp
+-+++ b/src/odb/src/db/dbTechLayerAntennaRule.cpp
+-@@ -985,6 +985,16 @@ void _dbTechAntennaPinModel::getAntennaValues(
+-   }
+- }
+- 
+-+bool dbTechAntennaPinModel::hasGateArea()
+-+{
+-+  vector<std::pair<double, dbTechLayer*>> gate_areas;
+-+  getGateArea(gate_areas);
+-+  if (gate_areas.size() > 0)
+-+    return true;
+-+  else
+-+    return false;
+-+}
+-+
+- void dbTechAntennaPinModel::getGateArea(
+-     std::vector<std::pair<double, dbTechLayer*>>& data)
+- {
+-
+diff --git a/nix/patches/openroad/rmp_abc.patch b/nix/patches/openroad/rmp_abc.patch
+new file mode 100644
+index 0000000..d93d5c0
+--- /dev/null
++++ b/nix/patches/openroad/rmp_abc.patch
+@@ -0,0 +1,15 @@
++diff --git a/src/rmp/src/CMakeLists.txt b/src/rmp/src/CMakeLists.txt
++index 676819197..fec6f3d3b 100644
++--- a/src/rmp/src/CMakeLists.txt
+++++ b/src/rmp/src/CMakeLists.txt
++@@ -90,6 +90,7 @@ target_link_libraries(rmp_abc_library
++     dbSta_lib
++     libabc
++     utl_lib
+++    ${ABC_LIBRARY}
++ )
++ 
++ if (Python3_FOUND AND BUILD_PYTHON)
++-- 
++2.42.0
++
+diff --git a/openlane/scripts/odbpy/check_antenna_properties.py b/openlane/scripts/odbpy/check_antenna_properties.py
+index 88fcd70..cbac32f 100644
+--- a/openlane/scripts/odbpy/check_antenna_properties.py
++++ b/openlane/scripts/odbpy/check_antenna_properties.py
+@@ -31,18 +31,18 @@ def check_cells(odb_cells):
+             if mterm.getSigType() in ["GROUND", "POWER", "ANALOG"]:
+                 continue
+             pin_name = mterm.getName()
+-            has_diff_area = mterm.hasDiffArea()
+-            has_gate_area = (
++            diff_area = mterm.getDiffArea()
++            gate_area = (
+                 mterm.getDefaultAntennaModel()
+-                and mterm.getDefaultAntennaModel().hasGateArea()
+-                or False
++                and mterm.getDefaultAntennaModel().getGateArea()
++                or []
+             )
+             io_type = mterm.getIoType()
+-            if io_type == "INOUT" and not (has_diff_area or has_gate_area):
++            if io_type == "INOUT" and not (len(diff_area) or len(gate_area)):
+                 inout_pins.append(pin_name)
+-            elif io_type == "INPUT" and not has_gate_area:
++            elif io_type == "INPUT" and not len(gate_area):
+                 input_pins.append(pin_name)
+-            elif io_type == "OUTPUT" and not has_diff_area:
++            elif io_type == "OUTPUT" and not len(diff_area):
+                 output_pins.append(pin_name)
+         if inout_pins:
+             print(
+-- 
+2.45.1
+
